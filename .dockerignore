@@ -1,0 +1,23 @@
+# Don't send these to Docker build context
+.vectordb/
+.scan_state.json
+.env
+.git/
+.gitignore
+
+# Runtime data (mounted as volumes)
+workspace/
+context/
+reports/
+output/
+web/logs/
+
+# Dev tools
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/

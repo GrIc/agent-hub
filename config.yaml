@@ -1,0 +1,106 @@
+# ============================================================
+# Agent Hub - Configuration
+# ============================================================
+# All model IDs are examples. Replace with your own models.
+# Any OpenAI-compatible API works (OpenAI, Mistral, vLLM, Ollama, etc.)
+
+models:
+  heavy: mistralai/Mistral-Small-3.2-24B-Instruct-2506
+  code: mistralai/Devstral-Small-2-24B-Instruct-2512
+  light: mistralai/Ministral-3-8B-Instruct-2512
+  reasoning: mistralai/Ministral-3-14B-Reasoning-2512
+  embed: intfloat/multilingual-e5-large
+  rerank: BAAI/bge-reranker-large
+
+# Agent model overrides (prompt comes from agents/defs/{name}.md)
+agents:
+  # Global agents
+  expert:
+    model: heavy
+    temperature: 0.3
+  codex:
+    model: heavy
+    temperature: 0.3
+  documenter:
+    model: heavy
+    temperature: 0.3
+  developer:
+    model: code
+    temperature: 0.2
+  # Project agents
+  portfolio:
+    model: heavy
+    temperature: 0.4
+  specifier:
+    model: heavy
+    temperature: 0.4
+  planner:
+    model: reasoning
+    temperature: 0.4
+  architect:
+    model: heavy
+    temperature: 0.3
+  presenter:
+    model: heavy
+    temperature: 0.5
+
+# RAG Configuration
+rag:
+  chunk_size: 1000
+  chunk_overlap: 150
+  top_k: 8
+  rerank_top_k: 8
+  max_chunks: 2000
+  extensions:
+    - .py
+    - .js
+    - .ts
+    - .jsx
+    - .tsx
+    - .java
+    - .cs
+    - .sql
+    - .md
+    - .txt
+    - .json
+    - .yaml
+    - .yml
+    - .xml
+    - .html
+    - .css
+    - .pptx
+    - .docx
+    - .pdf
+    - .properties
+
+# Custom DSL / domain-specific language (optional)
+# If your codebase uses a proprietary query language, describe it here.
+# This context is injected into agent prompts automatically.
+custom_dsl:
+  name: ""
+  file_extension: ""
+  description: ""
+  few_shot_examples: []
+  
+# Custom SCM commands (optional)
+# Used by the developer agent to unlock/lock files before/after modification.
+scm:
+  unlock_cmd: "chmod u+w {filepath}"
+  lock_cmd: "chmod u-w {filepath}"
+
+# Hierarchical documentation synthesis
+# Block definitions for classifying codex docs.
+# Default blocks: backend, frontend, database, tests, other.
+# Add custom blocks or override path_patterns here.
+synthesis:
+  blocks: {}
+  # Example: add an "infra" block
+  # blocks:
+  #   infra:
+  #     label: "Infrastructure"
+  #     description: "Deployment, CI/CD, Docker, scripts"
+  #     path_patterns: ["/infra/", "/deploy/", "/docker/", "Dockerfile", ".yml_"]
+  #   database:
+  #     label: "Database"
+  #     description: "SQL, schema definitions, migrations"
+  #     path_patterns: [".sql", "/migrations/", "/ddl/"]

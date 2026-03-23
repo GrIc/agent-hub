@@ -1,0 +1,11 @@
+openai>=1.0
+httpx>=0.25
+chromadb>=0.4
+pyyaml>=6.0
+python-dotenv>=1.0
+rich>=13.0
+fastapi>=0.100
+uvicorn>=0.20
+pymupdf>=1.23
+python-pptx>=0.6
+python-docx>=0.8

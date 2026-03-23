@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Environment
+.env
+
+# Vector DB
+.vectordb/
+
+# Watch state
+output/.scan_state.json
+
+# Outputs
+output/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Runtime data
+web/logs/
+
+# User-specific data
+workspace/*
+!workspace/README.md
+projects/*
+!projects/sample/
+context/architecture/*
+context/code-samples/*
+context/docs/*

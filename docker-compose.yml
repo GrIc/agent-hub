@@ -1,0 +1,50 @@
+# docker-compose.yml -- Agent Hub production deployment
+#
+# Usage:
+#   docker compose up -d
+#   docker compose logs -f web
+#   docker compose down
+
+services:
+  web:
+    image: ${DOCKER_IMAGE:-agent-hub:latest}
+    container_name: agent-hub-web
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    env_file:
+      - .env
+    volumes:
+      - ${HOST_VECTORDB_PATH:-./.vectordb}:/app/.vectordb
+      - ${HOST_WORKSPACE_PATH:-./workspace}:/app/workspace:ro
+      - ${HOST_CONTEXT_PATH:-./context}:/app/context:ro
+      - ${HOST_AGENTS_PATH:-./agents}:/app/agents:ro
+      - ${HOST_REPORTS_PATH:-./reports}:/app/reports:ro
+      - ${HOST_OUTPUT_PATH:-./output}:/app/output:ro
+      - ${HOST_WEBLOGS_PATH:-./web/logs}:/app/web/logs
+      - ./config.yaml:/app/config.yaml:ro
+    command: ["python", "-m", "web.server", "--host", "0.0.0.0", "--port", "8080"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/stats')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  indexer:
+    image: ${DOCKER_IMAGE:-agent-hub:latest}
+    container_name: agent-hub-indexer
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - INDEXER_INTERVAL_SECONDS=${INDEXER_INTERVAL_SECONDS:-3600}
+    volumes:
+      - ${HOST_VECTORDB_PATH:-./.vectordb}:/app/.vectordb
+      - ${HOST_WORKSPACE_PATH:-./workspace}:/app/workspace:ro
+      - ${HOST_CONTEXT_PATH:-./context}:/app/context
+      - ${HOST_AGENTS_PATH:-./agents}:/app/agents:ro
+      - ${HOST_REPORTS_PATH:-./reports}:/app/reports
+      - ${HOST_OUTPUT_PATH:-./output}:/app/output
+      - ./config.yaml:/app/config.yaml:ro
+    command: ["bash", "scripts/indexer-loop.sh"]
