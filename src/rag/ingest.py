@@ -244,7 +244,7 @@ def ingest_directory(
     skipped = 0
 
     all_paths = []
-    for dirpath, dirnames, filenames in os.walk(workspace, followlinks=True):
+    for dirpath, dirnames, filenames in os.walk(directory, followlinks=True):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
         for fname in filenames:
             all_paths.append(Path(dirpath) / fname)
