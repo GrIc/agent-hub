@@ -13,6 +13,16 @@ Config is declared in an optional ## Config section in the .md file:
     - doc_type: analysis (for project agents)
     - output_tag: analysis_md (for project agents)
     - upstream_types: requirements, specifications (for project agents)
+
+Per-agent functional context is declared in an optional ## Functional context section:
+    ## Functional context
+    This agent operates in a healthcare platform context.
+    Patient data is always PHI (Protected Health Information).
+    HIPAA compliance must be flagged in every code review.
+
+    This section is removed from the system prompt and stored separately.
+    It is injected into the system prompt after the global domain context
+    from config.yaml, so per-agent context can refine or override it.
 """
 
 import logging
@@ -24,10 +34,15 @@ logger = logging.getLogger(__name__)
 DEFS_DIR = Path("agents/defs")
 
 # Agents with dedicated Python classes (special commands like /scan, /apply, etc.)
+# NOTE: "architect" removed — merged into specifier. "storyteller" added.
 CORE_AGENTS = {
     "expert", "codex", "documenter", "developer",
-    "portfolio", "specifier", "planner", "architect", "presenter",
+    "portfolio", "specifier", "planner", "storyteller", "presenter",
 }
+
+# Boolean-like values for config parsing
+_TRUTHY = {"yes", "true", "1", "on"}
+_FALSY = {"no", "false", "0", "off"}
 
 
 def load_agent_definition(agent_name: str) -> dict:
@@ -39,6 +54,7 @@ def load_agent_definition(agent_name: str) -> dict:
             "system_prompt": str,
             "peers": list[str],
             "config": dict,    # Parsed from ## Config section
+            "functional_context": str,  # Parsed from ## Functional context section
             "raw": str,
         }
     """
@@ -50,6 +66,7 @@ def load_agent_definition(agent_name: str) -> dict:
             "system_prompt": f"You are an expert technical assistant named '{agent_name}'. Respond in English.",
             "peers": [],
             "config": {},
+            "functional_context": "",
             "raw": "",
         }
 
@@ -57,14 +74,20 @@ def load_agent_definition(agent_name: str) -> dict:
 
     peers = _extract_peers(raw)
     config = _extract_config(raw)
+    functional_context = _extract_functional_context(raw)
     system_prompt = _clean_for_prompt(raw)
 
-    logger.info(f"Loaded definition for '{agent_name}': {len(system_prompt)} chars, peers={peers}, config keys={list(config.keys())}")
+    logger.info(
+        f"Loaded definition for '{agent_name}': {len(system_prompt)} chars, "
+        f"peers={peers}, config keys={list(config.keys())}, "
+        f"functional_context={'yes' if functional_context else 'no'}"
+    )
 
     return {
         "system_prompt": system_prompt,
         "peers": peers,
         "config": config,
+        "functional_context": functional_context,
         "raw": raw,
     }
 
@@ -119,10 +142,10 @@ def _extract_config(markdown: str) -> dict:
         key = match.group(1).strip().lower()
         value = match.group(2).strip()
 
-        # Parse booleans
-        if value.lower() in ("yes", "true", "on"):
+        # Parse booleans (robust: handles yes/no/true/false/on/off)
+        if value.lower() in _TRUTHY:
             config[key] = True
-        elif value.lower() in ("no", "false", "off"):
+        elif value.lower() in _FALSY:
             config[key] = False
         # Parse floats
         elif key == "temperature":
@@ -139,10 +162,31 @@ def _extract_config(markdown: str) -> dict:
     return config
 
 
+def _extract_functional_context(markdown: str) -> str:
+    """
+    Extract the per-agent functional context from the '## Functional context' section.
+
+    Freeform text describing business/domain constraints specific to this agent's
+    role. Stored separately and injected into the system prompt after the global
+    domain context from config.yaml.
+
+    Returns an empty string if the section is absent.
+    """
+    section_match = re.search(
+        r"##\s*Functional context\s*\n(.*?)(?=\n##|\Z)",
+        markdown,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if not section_match:
+        return ""
+    return section_match.group(1).strip()
+
+
 def _clean_for_prompt(markdown: str) -> str:
     """
     Clean the markdown for use as a system prompt.
-    Removes metadata sections (Config, Linked agents) and the top-level title.
+    Removes metadata sections (Config, Linked agents, Functional context)
+    and the top-level title.
     """
     # Remove the top-level title (# Agent : xxx)
     cleaned = re.sub(r"^#\s+Agent\s*:.*\n", "", markdown, count=1)
@@ -158,6 +202,14 @@ def _clean_for_prompt(markdown: str) -> str:
     # Remove "Config" section (metadata, not instruction)
     cleaned = re.sub(
         r"##\s*Config\s*\n.*?(?=\n##|\Z)",
+        "",
+        cleaned,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+
+    # Remove "Functional context" section (injected separately, after global domain context)
+    cleaned = re.sub(
+        r"##\s*Functional context\s*\n.*?(?=\n##|\Z)",
         "",
         cleaned,
         flags=re.DOTALL | re.IGNORECASE,

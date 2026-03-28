@@ -1,6 +1,12 @@
 """
 Resilient OpenAI-compatible client with aggressive retry logic.
 Handles 500, 502, 503, 429 with exponential backoff + jitter.
+
+Supports automatic response completion when finish_reason == "length":
+    client.chat(..., complete=True)
+
+Supports cross-encoder reranking via /rerank endpoint:
+    client.rerank(query, documents, model=...)
 """
 
 import os
@@ -95,26 +101,52 @@ class ResilientClient:
         temperature: float = 0.5,
         max_tokens: int = 4096,
         fallback_models: Optional[list[str]] = None,
+        complete: bool = False,
+        max_completion_attempts: int = 5,
         **kwargs,
     ) -> str:
-        """Send a chat completion with retries and optional model fallback."""
+        """
+        Send a chat completion with retries and optional model fallback.
+
+        Args:
+            complete: If True, automatically continue the request when the model
+                      stops due to max_tokens (finish_reason == "length"), until
+                      the response is naturally complete or max_completion_attempts
+                      is reached. Useful for long document generation tasks.
+            max_completion_attempts: Maximum number of continuation rounds when
+                                     complete=True (default: 5).
+        """
         models_to_try = [model] + (fallback_models or [])
 
         total_chars = sum(len(m.get("content", "")) for m in messages)
         logger.info(
             f"[Chat] model={model}, messages={len(messages)}, "
-            f"total_chars={total_chars}, temperature={temperature}"
+            f"total_chars={total_chars}, temperature={temperature}, complete={complete}"
         )
 
         for i, current_model in enumerate(models_to_try):
             try:
-                return self._chat_with_retry(
+                content, finish_reason = self._chat_with_retry(
                     messages=messages,
                     model=current_model,
                     temperature=temperature,
                     max_tokens=max_tokens,
                     **kwargs,
                 )
+
+                if complete and finish_reason == "length":
+                    content = self._complete_response(
+                        messages=messages,
+                        model=current_model,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        partial=content,
+                        max_attempts=max_completion_attempts,
+                        **kwargs,
+                    )
+
+                return content
+
             except Exception as e:
                 if i < len(models_to_try) - 1:
                     logger.warning(
@@ -125,6 +157,65 @@ class ResilientClient:
                     logger.error(f"[Chat] All models exhausted. Last error: {_format_error(e)}")
                     raise
 
+    def _complete_response(
+        self,
+        messages: list[dict],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+        partial: str,
+        max_attempts: int,
+        **kwargs,
+    ) -> str:
+        """
+        Continue a truncated response (finish_reason == "length") until the model
+        stops naturally or max_attempts is exhausted.
+        """
+        full_content = partial
+
+        for attempt in range(max_attempts):
+            logger.warning(
+                f"[Chat] Response truncated (finish_reason=length) — "
+                f"continuation {attempt + 1}/{max_attempts} "
+                f"(accumulated: {len(full_content)} chars)"
+            )
+
+            continuation_messages = list(messages) + [
+                {"role": "assistant", "content": full_content},
+                {
+                    "role": "user",
+                    "content": (
+                        "Continue your response from where you left off. "
+                        "Do not repeat or summarize what you have already written, "
+                        "just continue seamlessly."
+                    ),
+                },
+            ]
+
+            chunk, finish_reason = self._chat_with_retry(
+                messages=continuation_messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                **kwargs,
+            )
+
+            full_content += chunk
+
+            if finish_reason != "length":
+                logger.info(
+                    f"[Chat] Response completed after {attempt + 1} continuation(s) "
+                    f"(finish_reason={finish_reason}, total={len(full_content)} chars)"
+                )
+                break
+        else:
+            logger.warning(
+                f"[Chat] Response still incomplete after {max_attempts} continuations "
+                f"(total={len(full_content)} chars). Consider increasing max_tokens."
+            )
+
+        return full_content
+
     def _chat_with_retry(
         self,
         messages: list[dict],
@@ -132,7 +223,14 @@ class ResilientClient:
         temperature: float,
         max_tokens: int,
         **kwargs,
-    ) -> str:
+    ) -> tuple[str, str]:
+        """
+        Send a single chat request with exponential-backoff retry.
+
+        Returns:
+            (content, finish_reason) — finish_reason is "stop", "length",
+            "tool_calls", "content_filter", or "stop" when unknown.
+        """
         last_exc = None
         for attempt in range(self.max_retries):
             try:
@@ -148,8 +246,18 @@ class ResilientClient:
                     **kwargs,
                 )
                 content = resp.choices[0].message.content or ""
-                logger.debug(f"[Chat] OK: {len(content)} chars")
-                return content
+                finish_reason = resp.choices[0].finish_reason or "stop"
+
+                if finish_reason == "length":
+                    logger.warning(
+                        f"[Chat] finish_reason=length — response cut at {len(content)} chars "
+                        f"(max_tokens={max_tokens}). Use complete=True to continue automatically."
+                    )
+                else:
+                    logger.debug(f"[Chat] OK: {len(content)} chars, finish_reason={finish_reason}")
+
+                return content, finish_reason
+
             except Exception as e:
                 last_exc = e
                 retryable = _is_retryable(e)
@@ -185,8 +293,8 @@ class ResilientClient:
         if not model:
             raise ValueError("No embedding model configured. Set 'models.embed' in config.yaml or MODEL_EMBED env var.")
 
-        # Truncate texts for 512-token context models (~1800 chars ~ 450 tokens)
-        MAX_CHARS = 1800
+        # Truncate texts for embedding models (~750 tokens ~ 3000 chars)
+        MAX_CHARS = 3000
         truncated = [t[:MAX_CHARS] if len(t) > MAX_CHARS else t for t in texts]
 
         total_chars = sum(len(t) for t in truncated)
@@ -257,3 +365,106 @@ class ResilientClient:
         raise RuntimeError(
             f"Embedding failed after {self.max_retries} retries: {_format_error(last_exc)}"
         ) from last_exc
+
+    # ── Reranking ──────────────────────────────────────────────────────
+
+    def rerank(
+        self,
+        query: str,
+        documents: list[str],
+        model: Optional[str] = None,
+        top_k: int = 8,
+    ) -> list[dict]:
+        """
+        Rerank documents using a cross-encoder model via /v1/rerank.
+
+        - Caps at 10 documents (cross-encoders OOM with too many).
+        - Truncates each doc to 800 chars.
+        - Tries "texts" field first (vLLM/TEI), then "documents" (Cohere) on 400.
+        - Falls back IMMEDIATELY on 500 (no retry — it's server OOM, not transient).
+        - Returns list of {index, score} sorted by score descending.
+        """
+        model = model or ""
+        if not model:
+            return [{"index": i, "score": 1.0} for i in range(len(documents))]
+
+        # Hard caps to prevent server OOM
+        MAX_DOCS = 10
+        MAX_CHARS = 800
+        capped = documents[:MAX_DOCS]
+        truncated = [d[:MAX_CHARS] for d in capped]
+
+        logger.info(
+            f"[Rerank] model={model}, query_len={len(query)}, "
+            f"docs={len(truncated)}/{len(documents)}, top_k={top_k}"
+        )
+
+        url = f"{self.base_url}/rerank"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        # Try both field names: vLLM/TEI uses "texts", Cohere uses "documents"
+        for field_name in ("texts", "documents"):
+            payload = {
+                "model": model,
+                "query": query[:MAX_CHARS],
+                field_name: truncated,
+                "top_n": min(top_k, len(truncated)),
+            }
+
+            try:
+                with httpx.Client(timeout=30.0, verify=False) as http:
+                    resp = http.post(url, json=payload, headers=headers)
+
+                # 400 = wrong field name, try the other one
+                if resp.status_code == 400:
+                    logger.debug(
+                        f"[Rerank] '{field_name}' rejected (400), trying next format"
+                    )
+                    continue
+
+                # 500+ = server OOM or crash — DON'T retry, fall back immediately
+                if resp.status_code >= 500:
+                    logger.warning(
+                        f"[Rerank] Server error {resp.status_code} with "
+                        f"{len(truncated)} docs — falling back to embedding scores"
+                    )
+                    return [
+                        {"index": i, "score": 1.0}
+                        for i in range(min(len(documents), top_k))
+                    ]
+
+                resp.raise_for_status()
+                data = resp.json()
+
+                # Parse — vLLM: {"data": [...]}, Cohere: {"results": [...]}
+                results = data.get("results", data.get("data", []))
+                ranked = []
+                for item in results:
+                    idx = item.get("index", item.get("document_index", 0))
+                    score = item.get("relevance_score", item.get("score", 0.0))
+                    ranked.append({"index": idx, "score": score})
+
+                ranked.sort(key=lambda x: x["score"], reverse=True)
+                if ranked:
+                    logger.info(
+                        f"[Rerank] OK ({field_name}): {len(ranked)} results, "
+                        f"top={ranked[0]['score']:.3f}"
+                    )
+                return ranked[:top_k]
+
+            except httpx.HTTPStatusError:
+                # Already handled 400/500 above
+                continue
+            except Exception as e:
+                logger.warning(f"[Rerank] Error with '{field_name}': {e}")
+                continue
+
+        # All field formats failed
+        logger.warning("[Rerank] All formats failed, using embedding scores")
+        return [
+            {"index": i, "score": 1.0}
+            for i in range(min(len(documents), top_k))
+        ]

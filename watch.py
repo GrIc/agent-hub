@@ -26,6 +26,13 @@ from rich.table import Table
 
 console = Console()
 
+# Time-Travel changelog
+try:
+    from src.changelog import generate_changelog_entry
+    HAS_CHANGELOG = True
+except ImportError:
+    HAS_CHANGELOG = False
+
 # -- Config ---
 
 STATE_FILE = Path("output/.scan_state.json")
@@ -33,7 +40,7 @@ CONTEXT_DOCS_DIR = Path("context/docs")
 
 CODE_EXTENSIONS = {
     ".py", ".java", ".js", ".ts", ".jsx", ".tsx", ".cs",
-    ".sql", ".tcl", ".jsp", ".properties",
+    ".sql", ".properties",
     ".xml", ".yaml", ".yml", ".json",
     ".html", ".css", ".scss",
     ".sh", ".bat", ".cmd",
@@ -70,12 +77,19 @@ def save_state(state: dict):
 
 
 def file_content_hash(path: Path) -> str:
-    """Fast hash of file content for change detection."""
+    """Fast hash of file content for change detection.
+
+    Normalizes line endings (CRLF -> LF) before hashing so that
+    the same file mounted from Windows (CRLF) and Linux (LF) produces
+    identical hashes. This prevents Docker containers from re-processing
+    all files when the workspace is bind-mounted from a Windows host.
+    """
     h = hashlib.md5()
     try:
         with open(path, "rb") as f:
             for chunk in iter(lambda: f.read(8192), b""):
-                h.update(chunk)
+                # Normalize CRLF -> LF for consistent cross-platform hashing
+                h.update(chunk.replace(b"\r\n", b"\n"))
     except OSError:
         return ""
     return h.hexdigest()
@@ -87,7 +101,12 @@ def scan_workspace(workspace: Path) -> dict[str, dict]:
     """Scan workspace and return current state of all code files."""
     current = {}
 
-    for path in sorted(workspace.rglob("*")):
+    all_paths = []
+    for dirpath, dirnames, filenames in os.walk(workspace, followlinks=True):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+        for fname in filenames:
+            all_paths.append(Path(dirpath) / fname)
+    for path in sorted(all_paths):
         if not path.is_file():
             continue
 
@@ -426,6 +445,18 @@ def main():
         except Exception as e:
             console.print(f"[red]RAG error: {e}[/red]")
             logging.exception("RAG update failed")
+
+    # Generate Time-Travel changelog entry
+    if HAS_CHANGELOG and not args.dry_run and total_changes > 0:
+        try:
+            generate_changelog_entry(
+                diff=diff,
+                workspace=workspace,
+                client=client,
+                model=model,
+            )
+        except Exception as e:
+            console.print(f"[yellow]Changelog generation failed: {e}[/yellow]")
 
     save_state(current_state)
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

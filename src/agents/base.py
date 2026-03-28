@@ -21,6 +21,9 @@ class BaseAgent:
     - System prompt loaded from agents/defs/{name}.md
     - Hierarchical RAG context injection (synthesis first, then details)
     - Peer reports injection (recent CRs from linked agents)
+    - Global domain context injection (from config.yaml → domain section)
+    - Per-agent functional context injection (from ## Functional context in .md)
+    - Optional extra API params per agent (e.g. reasoning_effort)
     - Automatic CR generation on /save or session end
 
     Subclasses override:
@@ -39,6 +42,8 @@ class BaseAgent:
         temperature: float = 0.5,
         rag_top_k: int = 8,
         custom_dsl_info: str = "",
+        domain_info: str = "",
+        extra_params: Optional[dict] = None,
     ):
         self.client = client
         self.store = store
@@ -46,6 +51,8 @@ class BaseAgent:
         self.temperature = temperature
         self.rag_top_k = rag_top_k
         self.custom_dsl_info = custom_dsl_info
+        self.domain_info = domain_info
+        self.extra_params = extra_params or {}
         self.history: list[dict] = []
         self.actions_log: list[str] = []
         self.files_generated: list[str] = []
@@ -54,12 +61,24 @@ class BaseAgent:
         definition = load_agent_definition(self.name)
         self._system_prompt = definition["system_prompt"]
         self._peers = definition["peers"]
+        self._functional_context = definition.get("functional_context", "")
 
     def get_system_prompt(self) -> str:
-        """Build the full system prompt with optional DSL context."""
+        """Build the full system prompt with optional DSL, domain, and functional context.
+
+        Injection order (each block appended only when non-empty):
+          1. Base system prompt (from agents/defs/{name}.md)
+          2. Custom DSL context    (config.yaml → custom_dsl)
+          3. Global domain context (config.yaml → domain)
+          4. Per-agent functional context (## Functional context in .md)
+        """
         prompt = self._system_prompt
         if self.custom_dsl_info:
             prompt += f"\n\n## Custom domain language\n{self.custom_dsl_info}"
+        if self.domain_info:
+            prompt += f"\n\n## Domain context\n{self.domain_info}"
+        if self._functional_context:
+            prompt += f"\n\n## Agent functional context\n{self._functional_context}"
         return prompt
 
     def retrieve_context(self, query: str) -> str:
@@ -130,11 +149,15 @@ class BaseAgent:
         estimated_tokens = total_chars // 3
         logger.debug(f"Estimated input tokens: ~{estimated_tokens}")
 
+        if self.extra_params:
+            logger.debug(f"[{self.name}] extra_params: {self.extra_params}")
+
         response = self.client.chat(
             messages=messages,
             model=self.model,
             temperature=self.temperature,
             max_tokens=4096,
+            **self.extra_params,
         )
 
         self.history.append({"role": "user", "content": user_message})
@@ -180,6 +203,10 @@ class BaseAgent:
 
         return None
 
+    def post_process(self, response: str) -> str:
+        """Hook for subclasses to process the LLM response. Returns final string."""
+        return response
+
     def _generate_report(self) -> str:
         if not self.history:
             return "No exchanges to summarize."
@@ -190,77 +217,41 @@ class BaseAgent:
             "and next steps if any. Be factual and concise."
         )
 
-        condensed = []
-        for msg in self.history:
-            content = msg["content"]
-            if len(content) > 300:
-                content = content[:300] + "..."
-            condensed.append({"role": msg["role"], "content": content})
-
-        messages = [
-            {"role": "system", "content": summary_prompt},
-            {"role": "user", "content": "Here are the exchanges:\n\n" + "\n".join(
-                f"{'User' if m['role']=='user' else 'Agent'}: {m['content']}"
-                for m in condensed
-            )},
-        ]
-
-        try:
-            summary = self.client.chat(
-                messages=messages,
-                model=self.model,
-                temperature=0.3,
-                max_tokens=1024,
-            )
-        except Exception as e:
-            logger.error(f"Failed to generate summary: {e}")
-            summary = "(Automatic summary unavailable -- API error)"
-
-        filepath = save_report(
+        path = save_report(
             agent_name=self.name,
-            summary=summary,
-            exchanges=self.history,
-            actions=self.actions_log if self.actions_log else None,
-            files_generated=self.files_generated if self.files_generated else None,
+            history=self.history,
+            client=self.client,
+            model=self.model,
+            summary_prompt=summary_prompt,
         )
-
-        return f"Report saved: {filepath}"
+        return f"Report saved: {path}"
 
     def _list_reports(self, agent_filter: Optional[str] = None) -> str:
-        reports = list_reports(agent_filter)
+        reports = list_reports(agent_filter or self.name)
         if not reports:
-            return f"No report for agent '{agent_filter}'." if agent_filter else "No reports available."
-
-        lines = ["Available reports:", ""]
-        for r in reports[:20]:
-            lines.append(f"  [{r['date']}] {r['agent']} -> {r['filename']}")
-        total = len(reports)
-        if total > 20:
-            lines.append(f"  ... and {total - 20} more")
-        lines.append(f"\nTotal: {total} report(s)")
-        return "\n".join(lines)
+            return "No reports found."
+        lines = [f"  {r['filename']} ({r['date']})" for r in reports[:10]]
+        return "Reports:\n" + "\n".join(lines)
 
     def _undo_last_report(self, agent_name: str) -> str:
+        from src.reports import delete_last_report
         deleted = delete_last_report(agent_name)
         if deleted:
-            return f"Last report deleted: {deleted}"
-        return f"No report to delete for '{agent_name}'."
+            return f"Deleted: {deleted}"
+        return f"No report found for '{agent_name}'."
 
     def _help_text(self) -> str:
         return (
             "Available commands:\n"
-            "  /save            -- Generate a session report\n"
-            "  /reports [agent] -- List reports (optional: filter by agent)\n"
-            "  /undo [agent]    -- Delete last report (default: current agent)\n"
-            "  /clear           -- Clear conversation history\n"
-            "  /history         -- Show recent messages\n"
-            "  /switch          -- Switch agent\n"
-            "  /help            -- Show this help\n"
+            "  /save       — Summarize and save this session as a report\n"
+            "  /reports    — List saved reports\n"
+            "  /undo       — Delete the last report\n"
+            "  /history    — Show recent conversation history\n"
+            "  /clear      — Clear conversation history\n"
+            "  /help       — Show this help\n"
+            "  /quit       — Exit the session"
         )
-
-    def post_process(self, response: str) -> str:
-        return response
-
+    
     def log_action(self, action: str):
         self.actions_log.append(action)
 

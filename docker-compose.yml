@@ -18,9 +18,10 @@ services:
       - ${HOST_VECTORDB_PATH:-./.vectordb}:/app/.vectordb
       - ${HOST_WORKSPACE_PATH:-./workspace}:/app/workspace:ro
       - ${HOST_CONTEXT_PATH:-./context}:/app/context:ro
+      - ${HOST_PROJECTS_PATH:-./projects}:/app/projects
       - ${HOST_AGENTS_PATH:-./agents}:/app/agents:ro
-      - ${HOST_REPORTS_PATH:-./reports}:/app/reports:ro
-      - ${HOST_OUTPUT_PATH:-./output}:/app/output:ro
+      - ${HOST_REPORTS_PATH:-./reports}:/app/reports
+      - ${HOST_OUTPUT_PATH:-./output}:/app/output
       - ${HOST_WEBLOGS_PATH:-./web/logs}:/app/web/logs
       - ./config.yaml:/app/config.yaml:ro
     command: ["python", "-m", "web.server", "--host", "0.0.0.0", "--port", "8080"]

@@ -14,7 +14,11 @@ venv/
 output/.scan_state.json
 
 # Outputs
-output/
+output/*
+!output/.gitkeep
+!output/backups/
+output/backups/*
+!output/backups/.gitkeep
 
 # IDE
 .vscode/

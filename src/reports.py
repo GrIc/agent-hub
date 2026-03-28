@@ -29,25 +29,69 @@ def generate_report_filename(agent_name: str) -> str:
 
 def save_report(
     agent_name: str,
-    summary: str,
-    exchanges: list[dict],
+    summary: str = "",
+    exchanges: list[dict] | None = None,
     actions: list[str] | None = None,
     files_generated: list[str] | None = None,
+    # New params for LLM-based summary generation
+    history: list[dict] | None = None,
+    client=None,
+    model: str = "",
+    summary_prompt: str = "",
 ) -> str:
     """
     Save a CR markdown file.
 
+    Supports two calling conventions:
+      1. Legacy:  save_report(agent_name, summary, exchanges, actions, files_generated)
+      2. New:     save_report(agent_name, history=..., client=..., model=..., summary_prompt=...)
+                  -> generates summary via LLM, uses history as exchanges.
+
     Args:
         agent_name: Name of the agent
-        summary: LLM-generated summary of the session
-        exchanges: List of {role, content} from the conversation
-        actions: List of actions taken (files modified, created, etc.)
+        summary: Pre-generated summary (legacy mode)
+        exchanges: List of {role, content} (legacy mode)
+        actions: List of actions taken
         files_generated: List of output files produced
+        history: Conversation history (new mode — used as exchanges)
+        client: ResilientClient instance (new mode — for LLM summary)
+        model: Model ID (new mode — for LLM summary)
+        summary_prompt: System prompt for summary generation (new mode)
 
     Returns:
         Path to the saved report.
     """
     ensure_reports_dir()
+
+    # New calling convention: generate summary via LLM from history
+    if history is not None:
+        exchanges = history
+        if client and model and summary_prompt and len(history) > 0:
+            try:
+                condensed = []
+                for msg in history[-20:]:
+                    role = "User" if msg["role"] == "user" else "Agent"
+                    content = msg["content"][:300]
+                    condensed.append(f"{role}: {content}")
+                context = "\n".join(condensed)
+                summary = client.chat(
+                    messages=[
+                        {"role": "system", "content": summary_prompt},
+                        {"role": "user", "content": f"Session exchanges:\n{context}"},
+                    ],
+                    model=model,
+                    temperature=0.3,
+                    max_tokens=500,
+                )
+            except Exception as e:
+                logger.warning(f"LLM summary generation failed, using fallback: {e}")
+                summary = f"Session with {len(history)} exchanges. Summary generation failed."
+        elif not summary:
+            summary = f"Session with {len(history)} exchanges."
+
+    exchanges = exchanges or []
+    actions = actions or []
+    files_generated = files_generated or []
 
     filename = generate_report_filename(agent_name)
     filepath = REPORTS_DIR / filename

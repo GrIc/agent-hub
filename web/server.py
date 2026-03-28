@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 import uvicorn
 
 import sys
@@ -30,7 +30,7 @@ try:
 except ImportError:
     pass
 
-from src.config import load_config, get_model_for_agent, get_agent_temperature, build_custom_dsl_context
+from src.config import load_config, get_model_for_agent, get_agent_temperature, build_custom_dsl_context, build_domain_context, get_model_for_agent, get_agent_temperature
 from src.client import ResilientClient
 from src.rag.store import VectorStore
 from src.agent_defs import load_agent_definition, discover_custom_agents
@@ -43,13 +43,13 @@ STATS_FILE = LOGS_DIR / "stats.json"
 
 # Core agents always available in the web UI
 CORE_WEB_AGENTS = {
-    "expert":     {"emoji": "🧠", "desc": "Code Q&A -- explain how things work"},
-    "documenter": {"emoji": "📐", "desc": "Architecture docs & diagrams"},
-    "portfolio":  {"emoji": "📋", "desc": "Analyze notes -> requirements"},
-    "specifier":  {"emoji": "📝", "desc": "Requirements -> technical specs"},
-    "architect":  {"emoji": "🏗️", "desc": "Fullstack technical architecture"},
-    "planner":    {"emoji": "📅", "desc": "Specs -> roadmap with tasks"},
-    "presenter":  {"emoji": "🎬", "desc": "All docs -> slide deck"},
+    "expert":      {"emoji": "🧠", "desc": "Code Q&A, review & debug -- the go-to dev assistant"},
+    "documenter":  {"emoji": "📐", "desc": "Architecture docs & diagrams"},
+    "portfolio":   {"emoji": "📋", "desc": "Analyze notes -> requirements"},
+    "specifier":   {"emoji": "📝", "desc": "Requirements -> technical specs + architecture"},
+    "planner":     {"emoji": "📅", "desc": "Specs -> roadmap with tasks"},
+    "storyteller": {"emoji": "📖", "desc": "All docs -> techno-functional synthesis"},
+    "presenter":   {"emoji": "🎬", "desc": "Synthesis -> slide deck"},
 }
 
 MAX_HISTORY = 20
@@ -129,9 +129,11 @@ def create_app(cfg: dict) -> FastAPI:
     )
 
     embed_model = cfg["models"].get("embed", "")
-    store = VectorStore(client=client, embed_model=embed_model)
+    rerank_model = cfg["models"].get("rerank", "")
+    store = VectorStore(client=client, embed_model=embed_model, rerank_model=rerank_model)
 
     dsl_context = build_custom_dsl_context(cfg)
+    domain_context = build_domain_context(cfg)
 
     # Build the web agent list (core + custom with web: yes)
     web_agents = _build_web_agents()
@@ -154,16 +156,23 @@ def create_app(cfg: dict) -> FastAPI:
             temperature = get_agent_temperature(cfg, name)
 
         system_prompt = definition["system_prompt"]
+        functional_context = definition.get("functional_context", "")
         peers = definition["peers"]
+        extra_params = definition.get("config", {}).get("extra_params", {})
 
         if dsl_context:
             system_prompt += f"\n\n## Custom domain language\n{dsl_context}"
+        if domain_context:
+            system_prompt += f"\n\n## Domain context\n{domain_context}"
+        if functional_context:
+            system_prompt += f"\n\n## Agent functional context\n{functional_context}"
 
         agent_configs[name] = {
             "system_prompt": system_prompt,
             "model": model,
             "temperature": temperature,
             "peers": peers,
+            "extra_params": extra_params,
         }
 
     rag_top_k = cfg.get("rag", {}).get("rerank_top_k", 8)
@@ -173,9 +182,9 @@ def create_app(cfg: dict) -> FastAPI:
 
     # -- Routes ---
 
-    @app.get("/", response_class=HTMLResponse)
-    async def index():
-        return FRONTEND_HTML
+    @app.get("/")
+    async def get_index():
+        return FileResponse("web/index.html")
 
     @app.get("/api/agents")
     async def list_agents():
@@ -233,6 +242,7 @@ def create_app(cfg: dict) -> FastAPI:
                 model=acfg["model"],
                 temperature=acfg["temperature"],
                 max_tokens=4096,
+                **acfg.get("extra_params", {}),
             )
             duration_ms = int((time.time() - start) * 1000)
 
@@ -299,127 +309,50 @@ def create_app(cfg: dict) -> FastAPI:
         entries.reverse()
         return {"date": target_date, "queries": entries[:limit]}
 
+    # -- Changelog (Time-Travel Documentation) --
+
+    @app.get("/api/changelog")
+    async def get_changelog(limit: int = 30):
+        """List changelog entries (most recent first)."""
+        from pathlib import Path
+        changelog_dir = Path("context/changelog")
+        if not changelog_dir.exists():
+            return {"entries": []}
+        entries = []
+        for f in sorted(changelog_dir.glob("*.md"), reverse=True)[:limit]:
+            try:
+                content = f.read_text(encoding="utf-8", errors="replace")
+                # Extract title from first line
+                first_line = content.strip().split("\n")[0].lstrip("# ").strip()
+                entries.append({
+                    "date": f.stem,
+                    "title": first_line,
+                    "filename": f.name,
+                })
+            except Exception:
+                pass
+        return {"entries": entries}
+
+    @app.get("/api/changelog/{date}")
+    async def get_changelog_entry(date: str):
+        """Get a specific changelog entry as markdown."""
+        from pathlib import Path
+        filepath = Path(f"context/changelog/{date}.md")
+        if not filepath.exists():
+            return JSONResponse({"error": "Not found"}, status_code=404)
+        content = filepath.read_text(encoding="utf-8", errors="replace")
+        return {"date": date, "content": content}
+
+
+    # -- Documentation Hub routes --
+    from web.docs_routes import register_docs_routes
+    register_docs_routes(app, cfg, store)
+
+    # -- Workspace routes (full CLI in web) --
+    from web.workspace_routes import register_workspace_routes
+    register_workspace_routes(app, cfg, client, store)
+
     return app
-
-
-# -- Frontend ---
-
-FRONTEND_HTML = """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Agent Hub</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f1117; color: #e0e0e0; min-height: 100vh; display: flex; flex-direction: column; }
-        header { background: #1a1b26; border-bottom: 1px solid #2a2b3a; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; }
-        header h1 { font-size: 18px; color: #7aa2f7; }
-        #header-right { display: flex; gap: 16px; align-items: center; }
-        #agent-select { padding: 6px 12px; border-radius: 8px; border: 1px solid #2a2b3a; background: #1a1b26; color: #e0e0e0; font-size: 14px; cursor: pointer; }
-        #stats-bar { font-size: 13px; color: #888; display: flex; gap: 16px; }
-        .stat-item span { color: #7aa2f7; font-weight: 600; }
-        #agent-desc { font-size: 12px; color: #666; text-align: center; padding: 6px; background: #1a1b26; border-bottom: 1px solid #2a2b3a; }
-        main { flex: 1; max-width: 900px; width: 100%; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; }
-        #chat { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; padding-bottom: 16px; }
-        .message { padding: 14px 18px; border-radius: 12px; max-width: 85%; line-height: 1.6; white-space: pre-wrap; word-wrap: break-word; }
-        .message.user { background: #1a3a5c; align-self: flex-end; border-bottom-right-radius: 4px; }
-        .message.assistant { background: #1a1b26; border: 1px solid #2a2b3a; align-self: flex-start; border-bottom-left-radius: 4px; }
-        .message.error { background: #3a1a1a; border: 1px solid #5a2a2a; color: #ff6b6b; }
-        .message.system { background: #1a2a1a; border: 1px solid #2a3a2a; color: #7adf7a; font-size: 13px; align-self: center; }
-        .sources { margin-top: 10px; padding-top: 10px; border-top: 1px solid #2a2b3a; font-size: 12px; color: #666; }
-        .sources span { display: inline-block; background: #2a2b3a; padding: 2px 8px; border-radius: 4px; margin: 2px 4px 2px 0; font-family: monospace; font-size: 11px; }
-        .duration { font-size: 11px; color: #555; margin-top: 6px; }
-        #input-area { display: flex; gap: 10px; padding-top: 16px; border-top: 1px solid #2a2b3a; }
-        #query-input { flex: 1; padding: 12px 16px; border-radius: 10px; border: 1px solid #2a2b3a; background: #1a1b26; color: #e0e0e0; font-size: 15px; outline: none; resize: none; min-height: 48px; max-height: 150px; font-family: inherit; }
-        #query-input:focus { border-color: #7aa2f7; }
-        #query-input::placeholder { color: #555; }
-        #send-btn { padding: 12px 24px; border-radius: 10px; border: none; background: #7aa2f7; color: #0f1117; font-size: 15px; font-weight: 600; cursor: pointer; }
-        #send-btn:hover { background: #5a8af7; }
-        #send-btn:disabled { background: #333; color: #666; cursor: wait; }
-        #clear-btn { padding: 8px 12px; border-radius: 8px; border: 1px solid #333; background: transparent; color: #888; font-size: 12px; cursor: pointer; }
-        #clear-btn:hover { border-color: #ff6b6b; color: #ff6b6b; }
-        .typing { color: #7aa2f7; font-style: italic; }
-        code { background: #2a2b3a; padding: 1px 6px; border-radius: 4px; font-size: 13px; }
-        pre { background: #1e1f2e; padding: 12px; border-radius: 8px; overflow-x: auto; margin: 8px 0; }
-        pre code { background: none; padding: 0; }
-        .mermaid-container { background: #1e1f2e; border-radius: 8px; padding: 16px; margin: 8px 0; overflow-x: auto; }
-        .mermaid-container svg { max-width: 100%; height: auto; }
-    </style>
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-    <script>mermaid.initialize({ startOnLoad: false, theme: 'dark', themeVariables: { darkMode: true, background: '#1e1f2e', primaryColor: '#7aa2f7', primaryTextColor: '#e0e0e0', lineColor: '#555' } });</script>
-</head>
-<body>
-    <header>
-        <h1>Agent Hub</h1>
-        <div id="header-right">
-            <select id="agent-select" onchange="switchAgent()"></select>
-            <button id="clear-btn" onclick="clearHistory()">Clear history</button>
-            <div id="stats-bar">
-                <div class="stat-item">Index: <span id="stat-index">-</span></div>
-                <div class="stat-item">Today: <span id="stat-today">-</span></div>
-            </div>
-        </div>
-    </header>
-    <div id="agent-desc">Loading agents...</div>
-    <main>
-        <div id="chat"></div>
-        <div id="input-area">
-            <textarea id="query-input" placeholder="Ask a question..." rows="1"></textarea>
-            <button id="send-btn" onclick="sendQuery()">Ask</button>
-        </div>
-    </main>
-    <script>
-        const chat = document.getElementById('chat');
-        const input = document.getElementById('query-input');
-        const btn = document.getElementById('send-btn');
-        const agentSelect = document.getElementById('agent-select');
-        const agentDesc = document.getElementById('agent-desc');
-        let currentAgent = 'expert';
-        let sessionId = Math.random().toString(36).substring(7);
-        let agents = {};
-        input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 150) + 'px'; });
-        input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuery(); } });
-        async function loadAgents() {
-            try { const res = await fetch('/api/agents'); agents = await res.json(); agentSelect.innerHTML = '';
-            for (const [name, info] of Object.entries(agents)) { const opt = document.createElement('option'); opt.value = name; opt.textContent = `${info.emoji} ${name}`; agentSelect.appendChild(opt); }
-            agentSelect.value = currentAgent; updateAgentDesc(); } catch (e) { console.error('Failed to load agents', e); }
-        }
-        function switchAgent() { const prev = currentAgent; currentAgent = agentSelect.value; updateAgentDesc(); if (prev !== currentAgent) { addSystemMessage(`Switched to ${agents[currentAgent]?.emoji || ''} ${currentAgent}`); } }
-        function updateAgentDesc() { const info = agents[currentAgent]; if (info) { agentDesc.textContent = `${info.emoji} ${currentAgent} -- ${info.desc} (model: ${info.model})`; } }
-        async function loadStats() { try { const res = await fetch('/api/stats'); const data = await res.json(); document.getElementById('stat-index').textContent = data.index_size || 0; const today = new Date().toISOString().split('T')[0]; document.getElementById('stat-today').textContent = (data.queries_by_day || {})[today] || 0; } catch (e) {} }
-        function addMessage(role, content, sources, durationMs) {
-            const div = document.createElement('div'); div.className = `message ${role}`;
-            if (role === 'assistant') {
-                let html = content
-                    .replace(/```mermaid\n([\s\S]*?)```/g, '<div class="mermaid-container"><pre class="mermaid">$1</pre></div>')
-                    .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
-                    .replace(/`([^`]+)`/g, '<code>$1</code>')
-                    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-                    .replace(/^### (.+)$/gm, '<strong>$1</strong>')
-                    .replace(/^## (.+)$/gm, '<strong style="font-size:16px">$1</strong>')
-                    .replace(/^# (.+)$/gm, '<strong style="font-size:18px">$1</strong>');
-                div.innerHTML = html;
-                if (sources && sources.length > 0) { const srcDiv = document.createElement('div'); srcDiv.className = 'sources'; srcDiv.innerHTML = 'Sources: ' + sources.map(s => `<span>${s.file} (${(s.score * 100).toFixed(0)}%)</span>`).join(''); div.appendChild(srcDiv); }
-                if (durationMs) { const durDiv = document.createElement('div'); durDiv.className = 'duration'; durDiv.textContent = `${(durationMs / 1000).toFixed(1)}s`; div.appendChild(durDiv); }
-            } else { div.textContent = content; }
-            chat.appendChild(div); chat.scrollTop = chat.scrollHeight;
-            try { mermaid.run({ nodes: div.querySelectorAll('.mermaid') }); } catch(e) {}
-        }
-        function addSystemMessage(text) { const div = document.createElement('div'); div.className = 'message system'; div.textContent = text; chat.appendChild(div); chat.scrollTop = chat.scrollHeight; }
-        async function clearHistory() { try { await fetch('/api/clear', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: sessionId, agent: currentAgent }) }); chat.innerHTML = ''; addSystemMessage(`History cleared for ${currentAgent}`); } catch (e) {} }
-        async function sendQuery() {
-            const query = input.value.trim(); if (!query) return; input.value = ''; input.style.height = 'auto'; btn.disabled = true; addMessage('user', query);
-            const typing = document.createElement('div'); typing.className = 'message assistant typing'; typing.textContent = 'Thinking...'; chat.appendChild(typing); chat.scrollTop = chat.scrollHeight;
-            try { const res = await fetch('/api/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query, agent: currentAgent, session_id: sessionId }) }); chat.removeChild(typing);
-            if (res.ok) { const data = await res.json(); addMessage('assistant', data.answer, data.sources, data.duration_ms); } else { const data = await res.json(); addMessage('error', `Error: ${data.error || 'Request failed'}`); }
-            } catch (e) { chat.removeChild(typing); addMessage('error', `Network error: ${e.message}`); }
-            btn.disabled = false; input.focus(); loadStats();
-        }
-        loadAgents(); loadStats(); addSystemMessage('Welcome! Select an agent above and ask a question.');
-    </script>
-</body>
-</html>"""
 
 
 # -- Main ---

@@ -1,22 +1,37 @@
 # ============================================================
-# Agent Hub - Configuration
+# Agent Hub — Configuration
 # ============================================================
-# All model IDs are examples. Replace with your own models.
-# Any OpenAI-compatible API works (OpenAI, Mistral, vLLM, Ollama, etc.)
+# Secrets & environment (API keys, retry) → .env
+# Application config (models, agents, RAG)  → this file
+#
+# Any OpenAI-compatible API works:
+#   OpenAI, Mistral, vLLM, Ollama, LiteLLM, Azure OpenAI, etc.
+# ============================================================
+
+# ── Models ──────────────────────────────────────────────────
+# Define model aliases used by agents. Replace with your own.
+# Use any model ID your API supports.
 
 models:
-  heavy: mistralai/Mistral-Small-3.2-24B-Instruct-2506
-  code: mistralai/Devstral-Small-2-24B-Instruct-2512
-  light: mistralai/Ministral-3-8B-Instruct-2512
-  reasoning: mistralai/Ministral-3-14B-Reasoning-2512
-  embed: intfloat/multilingual-e5-large
-  rerank: BAAI/bge-reranker-large
+  heavy: gpt-4o                        # Best reasoning model
+  code: gpt-4o                         # Code-specialized model
+  light: gpt-4o-mini                   # Fast, cheap model
+  reasoning: gpt-4o                    # For planning/reasoning tasks
+  embed: text-embedding-3-small        # Embedding model
+  rerank: ""                           # Cross-encoder reranking (optional)
+  # Examples for other providers:
+  # heavy: mistralai/Mistral-Small-3.2-24B-Instruct-2506
+  # code: mistralai/Devstral-Small-2-24B-Instruct-2512
+  # embed: BAAI/bge-m3
+  # rerank: BAAI/bge-reranker-large
 
-# Agent model overrides (prompt comes from agents/defs/{name}.md)
+# ── Agent overrides ─────────────────────────────────────────
+# Override model, temperature, and extra API params per agent.
+# Prompt content comes from agents/defs/{name}.md files.
+
 agents:
-  # Global agents
   expert:
-    model: heavy
+    model: code
     temperature: 0.3
   codex:
     model: heavy
@@ -27,31 +42,32 @@ agents:
   developer:
     model: code
     temperature: 0.2
-  # Project agents
   portfolio:
     model: heavy
     temperature: 0.4
   specifier:
     model: heavy
-    temperature: 0.4
+    temperature: 0.2
   planner:
     model: reasoning
-    temperature: 0.4
-  architect:
+    temperature: 0.0
+    # extra_params:
+    #   reasoning_effort: "high"     # Provider-specific (Mistral, etc.)
+  storyteller:
     model: heavy
     temperature: 0.3
   presenter:
     model: heavy
     temperature: 0.5
 
-# RAG Configuration
+# ── RAG Configuration ──────────────────────────────────────
 rag:
-  chunk_size: 1000
-  chunk_overlap: 150
-  top_k: 8
-  rerank_top_k: 8
-  max_chunks: 2000
-  extensions:
+  chunk_size: 1500                     # Characters per chunk
+  chunk_overlap: 200                   # Overlap between chunks
+  top_k: 8                            # Final results returned
+  rerank_top_k: 15                     # Candidates to retrieve before reranking
+  max_chunks: 100000                   # Max chunks in index
+  extensions:                          # File types to index
     - .py
     - .js
     - .ts
@@ -59,6 +75,13 @@ rag:
     - .tsx
     - .java
     - .cs
+    - .go
+    - .rb
+    - .php
+    - .rs
+    - .cpp
+    - .c
+    - .h
     - .sql
     - .md
     - .txt
@@ -68,39 +91,66 @@ rag:
     - .xml
     - .html
     - .css
-    - .pptx
-    - .docx
-    - .pdf
+    - .scss
+    - .sh
     - .properties
+    # Add your domain-specific extensions here:
+    # - .rql
+    # - .hql
 
-# Custom DSL / domain-specific language (optional)
-# If your codebase uses a proprietary query language, describe it here.
-# This context is injected into agent prompts automatically.
-custom_dsl:
-  name: ""
-  file_extension: ""
-  description: ""
-  few_shot_examples: []
-  
-# Custom SCM commands (optional)
-# Used by the developer agent to unlock/lock files before/after modification.
+# ── Custom DSL (optional) ──────────────────────────────────
+# If your codebase uses a domain-specific language, describe it here.
+# This context is injected into all agent prompts automatically.
+# Leave empty ({}) if your project doesn't use a custom DSL.
+
+custom_dsl: {}
+  # Example:
+  # name: "HQL"
+  # file_extension: ".hql"
+  # description: |
+  #   HQL is the Hibernate Query Language for database queries.
+  #   Key concepts: Entity, Session, Criteria, HQL query, Named query.
+  # few_shot_examples:
+  #   - input: "Find all users"
+  #     output: "FROM User u WHERE u.active = true ORDER BY u.name"
+
+# ── Custom SCM (optional) ──────────────────────────────────
+# Used by the developer agent to unlock/lock files before modification.
+# Leave empty if your files are not locked by an SCM.
+
 scm:
-  unlock_cmd: "chmod u+w {filepath}"
-  lock_cmd: "chmod u-w {filepath}"
+  unlock_cmd: ""                       # e.g. "p4 edit {filepath}" for Perforce
+  lock_cmd: ""                         # e.g. "p4 revert -a {filepath}"
 
-# Hierarchical documentation synthesis
-# Block definitions for classifying codex docs.
+# ── Synthesis blocks (optional) ────────────────────────────
+# Customize how synthesize.py classifies codex docs into architectural blocks.
 # Default blocks: backend, frontend, database, tests, other.
 # Add custom blocks or override path_patterns here.
+
 synthesis:
   blocks: {}
-  # Example: add an "infra" block
+  # Example:
   # blocks:
   #   infra:
   #     label: "Infrastructure"
   #     description: "Deployment, CI/CD, Docker, scripts"
-  #     path_patterns: ["/infra/", "/deploy/", "/docker/", "Dockerfile", ".yml_"]
+  #     path_patterns: ["/infra/", "/deploy/", "/docker/", "Dockerfile"]
   #   database:
   #     label: "Database"
-  #     description: "SQL, schema definitions, migrations"
   #     path_patterns: [".sql", "/migrations/", "/ddl/"]
+
+# ── Domain context (optional) ──────────────────────────────
+# Business domain knowledge injected into all agent prompts.
+# Helps agents understand your product context without hallucinating.
+
+domain:
+  sector: ""                           # e.g. fintech | healthtech | ecommerce
+  product_type: ""                     # e.g. "lending platform", "patient portal"
+  target_users: ""                     # e.g. "credit analysts, compliance officers"
+  description: ""                      # Free-form product description
+  key_constraints: []
+    # - "GDPR compliance required on all user data"
+    # - "Audit trail mandatory for all financial decisions"
+  glossary: []
+    # - term: "RiskScore"
+    #   definition: "Proprietary credit score 0-1000"

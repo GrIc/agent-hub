@@ -13,6 +13,7 @@ Each chunk is tagged with a `doc_level` metadata for hierarchical RAG:
   - report: Agent reports
 """
 
+import os
 import logging
 import re
 from pathlib import Path
@@ -135,13 +136,9 @@ def detect_doc_level(relative_path: str, directory_label: str = "") -> str:
     if directory_label == "context":
         # Synthesis outputs
         if "synthesis/" in rel_lower or "synthesis\\" in rel_lower:
-            if name.startswith("l0_"):
-                return "L0"
-            elif name.startswith("l1_"):
-                return "L1"
-            elif name.startswith("l2_"):
-                return "L2"
-
+            m = re.match(r"^(l\d+)_", name)
+            if m:
+                return m.group(1).upper()
         # Codex scan docs
         if name.startswith("codex_"):
             return "L3"
@@ -246,7 +243,12 @@ def ingest_directory(
     all_chunks = []
     skipped = 0
 
-    for path in sorted(directory.rglob("*")):
+    all_paths = []
+    for dirpath, dirnames, filenames in os.walk(workspace, followlinks=True):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+        for fname in filenames:
+            all_paths.append(Path(dirpath) / fname)
+    for path in sorted(all_paths):
         if not path.is_file():
             continue
         if any(_should_skip_dir(part) for part in path.relative_to(directory).parts[:-1]):

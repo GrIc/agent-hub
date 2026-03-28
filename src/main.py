@@ -21,7 +21,7 @@ from rich.table import Table
 from rich.logging import RichHandler
 from rich.markdown import Markdown
 
-from src.config import load_config, get_model_for_agent, get_agent_temperature, build_custom_dsl_context
+from src.config import load_config, get_model_for_agent, get_agent_temperature, build_custom_dsl_context, build_domain_context, get_agent_extra_params
 from src.client import ResilientClient
 from src.rag.ingest import ingest_directory
 from src.rag.store import VectorStore
@@ -35,11 +35,12 @@ from src.agents.developer import DeveloperAgent
 from src.agents.portfolio import PortfolioAgent
 from src.agents.specifier import SpecifierAgent
 from src.agents.planner import PlannerAgent
-from src.agents.architect import ArchitectAgent
 from src.agents.presenter import PresenterAgent
+from src.agents.storyteller import StorytellerAgent
 
 # Base classes for custom agents
 from src.agents.base import BaseAgent
+from src.pipeline import run_pipeline, show_pipeline_status, PIPELINE_STEPS
 from src.agents.project_agent import ProjectAgent
 
 console = Console()
@@ -57,8 +58,8 @@ CORE_PROJECT_AGENTS = {
     "portfolio":  {"class": PortfolioAgent,   "emoji": "📋", "desc": "Aggregate notes -> requirements"},
     "specifier":  {"class": SpecifierAgent,   "emoji": "📝", "desc": "Requirements -> technical specifications"},
     "planner":    {"class": PlannerAgent,     "emoji": "📅", "desc": "Specifications -> roadmap with tasks"},
-    "architect":  {"class": ArchitectAgent,   "emoji": "🏗️", "desc": "Fullstack technical architecture + diagrams"},
     "presenter":  {"class": PresenterAgent,   "emoji": "🎬", "desc": "All docs -> slide deck"},
+    "storyteller": {"class": StorytellerAgent, "emoji": "📖", "desc": "All docs -> techno-functional synthesis"},
 }
 
 
@@ -79,7 +80,6 @@ def _build_agent_registry() -> tuple[dict, dict, dict]:
         desc = cfg.get("description", f"Custom agent: {name}")
 
         if scope == "project":
-            # Custom project agent: uses ProjectAgent dynamically
             project_agents[name] = {
                 "class": "dynamic_project",
                 "emoji": emoji,
@@ -87,7 +87,6 @@ def _build_agent_registry() -> tuple[dict, dict, dict]:
                 "config": cfg,
             }
         else:
-            # Custom global agent: uses BaseAgent dynamically
             global_agents[name] = {
                 "class": "dynamic_global",
                 "emoji": emoji,
@@ -122,7 +121,11 @@ def run_ingestion(cfg: dict, client: ResilientClient, store: VectorStore) -> int
     max_chunks = rag_cfg.get("max_chunks", 2000)
 
     chunks = []
-    for label, path in [("context", Path("context")), ("workspace", Path(cfg.get("_defaults", {}).get("workspace_path", "./workspace"))), ("reports", Path("reports"))]:
+    for label, path in [
+        ("context", Path("context")),
+        ("workspace", Path(cfg.get("_defaults", {}).get("workspace_path", "./workspace"))),
+        ("reports", Path("reports")),
+    ]:
         if path.exists():
             ext = [".md"] if label == "reports" else extensions
             chunks.extend(ingest_directory(path, extensions=ext, chunk_size=chunk_size, chunk_overlap=chunk_overlap, label=label))
@@ -172,7 +175,7 @@ def show_agent_menu(project_name: str = None):
         console.print(f"[dim]No project selected. Use --project <n> for project agents.[/dim]")
 
     console.print(
-        "\n[dim]Global commands: /switch, /reindex, /quit[/dim]"
+        "\n[dim]Global commands: /switch, /reindex, /pipeline, /quit[/dim]"
         "\n[dim]Report commands: /save, /reports, /undo[/dim]"
     )
 
@@ -182,7 +185,6 @@ def _create_dynamic_agent(name: str, agent_info: dict, cfg: dict, client: Resili
     md_config = agent_info.get("config", {})
     scope = md_config.get("scope", "global")
 
-    # Resolve model: .md config > config.yaml agents section > default "heavy"
     model_alias = md_config.get("model")
     if model_alias:
         model = cfg["models"].get(model_alias, model_alias)
@@ -194,6 +196,7 @@ def _create_dynamic_agent(name: str, agent_info: dict, cfg: dict, client: Resili
         temperature = get_agent_temperature(cfg, name)
 
     dsl_context = build_custom_dsl_context(cfg)
+    domain_context = build_domain_context(cfg)
 
     kwargs = {
         "client": client,
@@ -202,6 +205,8 @@ def _create_dynamic_agent(name: str, agent_info: dict, cfg: dict, client: Resili
         "temperature": temperature,
         "rag_top_k": cfg.get("rag", {}).get("rerank_top_k", 4),
         "custom_dsl_info": dsl_context,
+        "domain_info": domain_context,
+        "extra_params": md_config.get("extra_params", {}),
     }
 
     if scope == "project":
@@ -210,7 +215,6 @@ def _create_dynamic_agent(name: str, agent_info: dict, cfg: dict, client: Resili
             return None
         kwargs["project"] = project
         agent = ProjectAgent(**kwargs)
-        # Set project-specific attributes from .md config
         agent.name = name
         agent.doc_type = md_config.get("doc_type", name)
         agent.output_tag = md_config.get("output_tag", f"{name}_md")
@@ -219,7 +223,6 @@ def _create_dynamic_agent(name: str, agent_info: dict, cfg: dict, client: Resili
         agent = BaseAgent(**kwargs)
         agent.name = name
 
-    # Reload definition to get the right system prompt (BaseAgent.__init__ loaded "base" or "project_agent")
     from src.agent_defs import load_agent_definition
     definition = load_agent_definition(name)
     agent._system_prompt = definition["system_prompt"]
@@ -236,16 +239,13 @@ def create_agent(name: str, cfg: dict, client: ResilientClient, store: VectorSto
     agent_info = ALL_AGENTS[name]
     agent_class = agent_info["class"]
 
-    # Dynamic custom agents
     if agent_class in ("dynamic_global", "dynamic_project"):
         return _create_dynamic_agent(name, agent_info, cfg, client, store, project)
 
-    # Web-only agent
     if agent_class is None:
         console.print(f"[red]Agent '{name}' is web-only.[/red]")
         return None
 
-    # Core agents with dedicated Python classes
     if name in PROJECT_AGENTS and not project:
         console.print(f"[red]Agent '{name}' requires a project. Use --project <n>.[/red]")
         return None
@@ -253,6 +253,8 @@ def create_agent(name: str, cfg: dict, client: ResilientClient, store: VectorSto
     model = get_model_for_agent(cfg, name)
     temperature = get_agent_temperature(cfg, name)
     dsl_context = build_custom_dsl_context(cfg)
+    domain_context = build_domain_context(cfg)
+    extra_params = get_agent_extra_params(cfg, name)
 
     kwargs = {
         "client": client,
@@ -261,6 +263,8 @@ def create_agent(name: str, cfg: dict, client: ResilientClient, store: VectorSto
         "temperature": temperature,
         "rag_top_k": cfg.get("rag", {}).get("rerank_top_k", 4),
         "custom_dsl_info": dsl_context,
+        "domain_info": domain_context,
+        "extra_params": extra_params,
     }
 
     if name in PROJECT_AGENTS and project:
@@ -279,7 +283,19 @@ def chat_loop(agent, cfg, client, store, project_name=None):
     peers = agent._peers if hasattr(agent, "_peers") else []
     peers_str = ", ".join(peers) if peers else "none"
 
-    title_parts = [f"[bold]{emoji} Agent: {agent.name}[/bold]", f"Model: {agent.model}"]
+    title_parts = [f"[bold]{emoji} Agent: {agent.name}[/bold]"]
+
+    # --- Model + config display (including extra_params) ---
+    model_line = f"Model: {agent.model}  |  Temperature: {agent.temperature}"
+    title_parts.append(model_line)
+
+    extra_params = getattr(agent, "extra_params", {})
+    if extra_params:
+        params_str = "  |  ".join(f"{k}: {v}" for k, v in extra_params.items())
+        title_parts.append(f"[yellow]Extra params: {params_str}[/yellow]")
+    else:
+        title_parts.append("[dim]Extra params: (none)[/dim]")
+
     if project_name:
         title_parts.append(f"Project: {project_name}")
     title_parts.append(f"Linked agents: {peers_str}")
@@ -328,6 +344,24 @@ def chat_loop(agent, cfg, client, store, project_name=None):
             return "switch"
         if cmd == "/reindex":
             run_ingestion(cfg, client, store)
+            continue
+        if cmd.startswith("/pipeline"):
+            if not project_name:
+                console.print("[red]Pipeline requires a project. Use --project <n>.[/red]")
+                continue
+            parts = cmd.split()
+            project = get_or_create_project(project_name)
+            if len(parts) > 1 and parts[1] == "status":
+                show_pipeline_status(project)
+                continue
+            start_from = ""
+            if len(parts) > 2 and parts[1] == "from":
+                start_from = parts[2]
+            run_pipeline(
+                cfg, client, store, project, project_name,
+                agent_factory=create_agent,
+                start_from=start_from,
+            )
             continue
 
         try:
@@ -404,7 +438,8 @@ def main():
 
     try:
         embed_model = cfg["models"].get("embed", "")
-        store = VectorStore(client=client, embed_model=embed_model)
+        rerank_model = cfg["models"].get("rerank", "")
+        store = VectorStore(client=client, embed_model=embed_model, rerank_model=rerank_model)
         logging.getLogger(__name__).info(f"VectorStore ready: {store.count} chunks")
     except Exception as e:
         console.print(f"[bold red]VectorStore error: {type(e).__name__}: {e}[/bold red]")

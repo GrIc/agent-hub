@@ -8,6 +8,8 @@ Supports hierarchical search via doc_level metadata:
   - code: Raw source code
   - context: Manual docs
   - report: Agent reports
+
+Supports cross-encoder reranking when a rerank model is configured.
 """
 
 import hashlib
@@ -26,13 +28,18 @@ import chromadb
 logger = logging.getLogger(__name__)
 
 # Level groups for hierarchical search
-LEVELS_SYNTHESIS = ["L0", "L1", "L2"]
-LEVELS_DETAIL = ["L3", "code", "context"]
-LEVELS_ALL = LEVELS_SYNTHESIS + LEVELS_DETAIL + ["report"]
+import re as _re
+
+LEVELS_DETAIL    = ["L3", "code", "context"]
+LEVELS_DETAIL_RE = set(LEVELS_DETAIL + ["report"])
+
+def _is_synthesis_level(level: str) -> bool:
+    """True for any LN level from synthesize.py (L0, L1, L2, L4, L7...) except L3."""
+    return bool(_re.match(r"^L\d+$", level)) and level != "L3"
 
 
 class VectorStore:
-    """Thin wrapper around ChromaDB + remote embeddings."""
+    """Thin wrapper around ChromaDB + remote embeddings + optional reranking."""
 
     def __init__(
         self,
@@ -40,9 +47,11 @@ class VectorStore:
         persist_dir: str = ".vectordb",
         collection_name: str = "context",
         embed_model: Optional[str] = None,
+        rerank_model: Optional[str] = None,
     ):
         self.llm_client = client
         self.embed_model = embed_model or ""
+        self.rerank_model = rerank_model or ""
 
         self.db = chromadb.PersistentClient(path=persist_dir)
         self.collection = self.db.get_or_create_collection(
@@ -51,6 +60,7 @@ class VectorStore:
         )
         logger.info(
             f"VectorStore ready: {self.collection.count()} docs in '{collection_name}'"
+            + (f", rerank={self.rerank_model}" if self.rerank_model else "")
         )
 
     def add_chunks(self, chunks: list[dict], batch_size: int = 8) -> int:
@@ -117,6 +127,31 @@ class VectorStore:
         logger.info(f"Total added: {added} new chunks (store total: {self.collection.count()})")
         return added
 
+    def _get_synthesis_levels(self) -> list[str]:
+        """
+        Discover which synthesis levels (L0, L1, L2, L4...) are present in the
+        current index by sampling metadata. Falls back to ["L0", "L1", "L2"] if
+        the index is empty or has no doc_level metadata.
+        """
+        try:
+            # Sample up to 1000 chunks to find all distinct doc_level values
+            result = self.collection.get(
+                limit=1000,
+                include=["metadatas"],
+            )
+            levels = set()
+            for meta in result.get("metadatas") or []:
+                lvl = meta.get("doc_level", "")
+                if _is_synthesis_level(lvl):
+                    levels.add(lvl)
+            if levels:
+                return sorted(levels)
+        except Exception as e:
+            logger.debug(f"Could not discover synthesis levels: {e}")
+
+        # Fallback for empty or legacy indexes
+        return ["L0", "L1", "L2"]
+
     def search(
         self,
         query: str,
@@ -179,40 +214,97 @@ class VectorStore:
 
         return output
 
-    def search_hierarchical(
+    def search_with_rerank(
         self,
         query: str,
-        top_k: int = 8,
+        retrieve_k: int = 15,
+        final_k: int = 8,
+        doc_levels: Optional[list[str]] = None,
     ) -> list[dict]:
         """
-        Two-pass hierarchical search:
-          1. First pass: synthesis docs (L0, L1, L2) for architectural context
-          2. Second pass: detailed docs (L3, code, context) for implementation details
-          3. Merge and deduplicate by source, sorted by score
+        Retrieve candidates via embedding, then rerank with cross-encoder.
+
+        If no rerank model is configured, falls back to embedding-only results.
+        """
+        # Over-retrieve candidates for reranking
+        candidates = self.search(query, top_k=retrieve_k, doc_levels=doc_levels)
+
+        if not candidates or not self.rerank_model:
+            return candidates[:final_k]
+
+        # Rerank via cross-encoder API
+        documents = [c["text"] for c in candidates]
+        try:
+            rankings = self.llm_client.rerank(
+                query=query,
+                documents=documents,
+                model=self.rerank_model,
+                top_k=final_k,
+            )
+
+            reranked = []
+            for r in rankings:
+                idx = r["index"]
+                if 0 <= idx < len(candidates):
+                    result = dict(candidates[idx])
+                    result["rerank_score"] = r["score"]
+                    reranked.append(result)
+
+            return reranked[:final_k]
+
+        except Exception as e:
+            logger.warning(f"Reranking failed ({e}), using embedding scores")
+            return candidates[:final_k]
+
+    def search_hierarchical(self, query: str, top_k: int = 8) -> list[dict]:
+        """
+        Two-pass hierarchical search with optional cross-encoder reranking.
+
+        1. First pass: synthesis docs (all LN levels except L3) for architectural context
+        2. Second pass: detailed docs (L3, code, context) for implementation details
+        3. Merge and deduplicate by source, sorted by (rerank) score
 
         Falls back to flat search if the index has no doc_level metadata.
         """
         half_k = max(top_k // 2, 2)
+        retrieve_k = max(top_k * 2, 15)  # Over-retrieve for reranking
 
-        # Pass 1: high-level synthesis
-        synthesis_results = self.search(query, top_k=half_k, doc_levels=LEVELS_SYNTHESIS)
+        # Discover synthesis levels dynamically (handles L4, L5... from synthesize.py)
+        synthesis_levels = self._get_synthesis_levels()
 
-        # Pass 2: detailed docs
-        detail_results = self.search(query, top_k=half_k, doc_levels=LEVELS_DETAIL)
+        # Pass 1: high-level synthesis (with reranking)
+        synthesis_results = self.search_with_rerank(
+            query, retrieve_k=retrieve_k, final_k=half_k,
+            doc_levels=synthesis_levels,
+        )
 
-        # If both are empty, fall back to flat search (old index without doc_level)
+        # Pass 2: detailed docs (with reranking)
+        detail_results = self.search_with_rerank(
+            query, retrieve_k=retrieve_k, final_k=half_k,
+            doc_levels=LEVELS_DETAIL,
+        )
+
+        # If both empty, fall back to flat search (legacy index without doc_level)
         if not synthesis_results and not detail_results:
             logger.debug("Hierarchical search returned nothing, falling back to flat search")
-            return self.search(query, top_k=top_k)
+            return self.search_with_rerank(
+                query, retrieve_k=retrieve_k, final_k=top_k,
+            )
 
         # Merge and deduplicate (prefer higher score when same source)
         seen = {}
         for result in synthesis_results + detail_results:
             key = result["source"] + "|" + result["text"][:100]
-            if key not in seen or result["score"] > seen[key]["score"]:
+            score = result.get("rerank_score", result["score"])
+            existing_score = seen[key].get("rerank_score", seen[key]["score"]) if key in seen else -1
+            if score > existing_score:
                 seen[key] = result
 
-        merged = sorted(seen.values(), key=lambda r: r["score"], reverse=True)
+        merged = sorted(
+            seen.values(),
+            key=lambda r: r.get("rerank_score", r["score"]),
+            reverse=True,
+        )
         return merged[:top_k]
 
     def clear(self):

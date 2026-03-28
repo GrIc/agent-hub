@@ -11,7 +11,6 @@ Generated docs go to context/docs/ to enrich RAG for all agents.
 import logging
 import os
 import re
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -25,10 +24,11 @@ OUTPUT_DIR = Path("output")
 # Code extensions to scan (not binaries, not assets)
 CODE_EXTENSIONS = {
     ".py", ".java", ".js", ".ts", ".jsx", ".tsx", ".cs",
-    ".sql", ".tcl", ".jsp", ".properties",
+    ".sql", ".properties",
     ".xml", ".yaml", ".yml", ".json",
     ".html", ".css", ".scss",
-    ".sh", ".bat", ".cmd",
+    ".cpp", ".h", ".hpp", ".c", ".go", ".rb", ".php",
+    ".sh", ".bash", ".zsh", ".bat", ".cmd",
     ".md", ".txt", ".rst",
 }
 
@@ -38,16 +38,20 @@ MAX_FILE_SIZE = 200_000
 # Max chars to send in a single LLM call (~8K tokens, safe for 32K context models)
 MAX_CHUNK_FOR_LLM = 24_000
 
+# How many times to try getting a complete response for a single chunk
+MAX_COMPLETION_ATTEMPTS = 4
+
 
 class CodexAgent(BaseAgent):
     name = "codex"
 
     def __init__(self, *args, workspace_path: str = "./workspace", **kwargs):
+        # FIX: pop custom_dsl_ext BEFORE calling super().__init__() to avoid
+        # passing an unexpected keyword argument to BaseAgent.__init__().
+        dsl_ext = kwargs.pop("custom_dsl_ext", None)
         super().__init__(*args, **kwargs)
         self.workspace = Path(workspace_path).resolve()
 
-        # Add custom DSL extension if configured
-        dsl_ext = kwargs.get("custom_dsl_ext")
         if dsl_ext and dsl_ext not in CODE_EXTENSIONS:
             CODE_EXTENSIONS.add(dsl_ext)
 
@@ -115,6 +119,15 @@ class CodexAgent(BaseAgent):
         for module_name, module_files in modules.items():
             results.append(f"\nModule: {module_name} ({len(module_files)} files)")
 
+            # Incremental check: skip if doc exists and no source is newer
+            doc_path = self._doc_path_for(module_name)
+            if doc_path.exists():
+                doc_mtime = doc_path.stat().st_mtime
+                newest_src = max((f.stat().st_mtime for f in module_files if f.exists()), default=0)
+                if newest_src <= doc_mtime:
+                    results.append(f"  Skipped (doc up-to-date).")
+                    continue
+
             combined = self._read_module_files(module_files)
 
             if not combined.strip():
@@ -134,6 +147,7 @@ class CodexAgent(BaseAgent):
                     self.log_file(filepath)
                 else:
                     results.append("  No documentation produced by the LLM.")
+                    logger.warning(f"[Codex] Empty doc for {module_name}")
             except Exception as e:
                 results.append(f"  LLM error: {e}")
                 logger.error(f"Doc generation failed for {module_name}: {e}")
@@ -147,7 +161,7 @@ class CodexAgent(BaseAgent):
         return "\n".join(results)
 
     def _collect_code_files(self, directory: Path) -> list[Path]:
-        """Collect all code files recursively, skip junk."""
+        """Collect all code files recursively, skip junk. Follows symlinks."""
         skip_dirs = {
             "node_modules", "__pycache__", ".git", ".svn", ".hg",
             "dist", "build", ".next", "target", ".venv", "venv",
@@ -155,18 +169,23 @@ class CodexAgent(BaseAgent):
         }
 
         files = []
-        for path in sorted(directory.rglob("*")):
-            if not path.is_file():
-                continue
-            if any(part in skip_dirs or part.startswith(".") for part in path.relative_to(directory).parts[:-1]):
-                continue
-            if path.suffix.lower() not in CODE_EXTENSIONS:
-                continue
-            if path.stat().st_size > MAX_FILE_SIZE:
-                continue
-            files.append(path)
+        for dirpath, dirnames, filenames in os.walk(directory, followlinks=True):
+            # Filter in-place to prevent descending into skip dirs
+            dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.startswith(".")]
+            for fname in sorted(filenames):
+                path = Path(dirpath) / fname
+                if path.suffix.lower() not in CODE_EXTENSIONS:
+                    continue
+                if path.stat().st_size > MAX_FILE_SIZE:
+                    continue
+                files.append(path)
 
-        return files
+        return sorted(files)
+
+    def _doc_path_for(self, module_name: str) -> Path:
+        """Return the deterministic doc path for a module (no timestamp)."""
+        safe_name = re.sub(r"[^\w\s-]", "_", module_name).strip("_") or "root"
+        return CONTEXT_DOCS_DIR / f"codex_{safe_name}.md"
 
     def _read_module_files(self, files: list[Path]) -> str:
         """Read and concatenate files with headers."""
@@ -176,7 +195,10 @@ class CodexAgent(BaseAgent):
                 content = f.read_text(encoding="utf-8", errors="replace")
                 if content.count("\ufffd") > len(content) * 0.1:
                     continue
-                relative = f.relative_to(self.workspace) if self.workspace in f.parents else f.name
+                try:
+                    relative = f.relative_to(self.workspace)
+                except ValueError:
+                    relative = f.name
                 parts.append(f"\n{'='*60}\n[FILE: {relative}]\n{'='*60}\n{content}")
             except Exception as e:
                 logger.debug(f"Cannot read {f}: {e}")
@@ -203,8 +225,149 @@ class CodexAgent(BaseAgent):
 
         return chunks
 
+    # -- Completeness detection ---
+
+    @staticmethod
+    def _count_open_fences(text: str) -> int:
+        """
+        Return the number of unmatched opening code fences (``` or ~~~).
+        An even count means all fences are properly closed.
+        """
+        fences = re.findall(r"^(?:```|~~~)\S*", text, re.MULTILINE)
+        # Each opening fence must be matched by a plain closing fence.
+        # A simple parity check covers the vast majority of cases.
+        return len(fences) % 2
+
+    @staticmethod
+    def _looks_truncated(text: str) -> bool:
+        """
+        Heuristic check for structurally incomplete markdown.
+
+        Returns True when the text shows clear signs of truncation:
+        - Unclosed code fence (odd number of ``` / ~~~)
+        - Ends mid-list without punctuation (e.g. "- Some item without")
+        - Ends mid-sentence (no terminal punctuation or closing markdown)
+        """
+        stripped = text.strip()
+        if not stripped:
+            return True
+
+        # Unclosed code fence — most reliable signal
+        if CodexAgent._count_open_fences(stripped) != 0:
+            logger.debug("[Completeness] Unclosed code fence detected.")
+            return True
+
+        last_line = stripped.splitlines()[-1].strip()
+
+        # Dangling list item with no terminal punctuation
+        if re.match(r"^[-*+]\s+\S", last_line):
+            terminal = set(".!?:)>\"'`")
+            if last_line[-1] not in terminal:
+                logger.debug(f"[Completeness] Truncated list item: {last_line!r}")
+                return True
+
+        # Mid-sentence ending (no terminal punctuation and no markdown closer)
+        terminal_pattern = re.compile(r"[.!?)\"`'>]$|```$|~~~$|\|$")
+        if not terminal_pattern.search(last_line):
+            # Allow short headings and empty endings
+            if len(last_line) > 15:
+                logger.debug(f"[Completeness] Abrupt ending: {last_line!r}")
+                return True
+
+        return False
+
+    # -- LLM call with structural completeness retry ---
+
+    def _call_llm_complete(
+        self,
+        messages: list[dict],
+        label: str = "",
+    ) -> str:
+        """
+        Call the LLM and ensure the response is structurally complete.
+
+        Strategy:
+          1. Call with complete=True (handles finish_reason == "length")
+          2. After each attempt, run _looks_truncated() on the result.
+          3. If still incomplete, send a targeted continuation that explicitly
+             acknowledges the broken structure and asks the model to close it.
+          4. Give up after MAX_COMPLETION_ATTEMPTS and save what we have with
+             a visible [INCOMPLETE] marker so the user knows.
+        """
+        response = self.client.chat(
+            messages=messages,
+            model=self.model,
+            temperature=self.temperature,
+            max_tokens=4096,
+            complete=True,
+        )
+
+        if not self._looks_truncated(response):
+            return response
+
+        # --- Structural completion loop ---
+        accumulated = response
+        for attempt in range(1, MAX_COMPLETION_ATTEMPTS + 1):
+            open_fences = self._count_open_fences(accumulated)
+            fence_hint = (
+                f" Note: there are {open_fences} unclosed code fence(s) in your previous output."
+                if open_fences
+                else ""
+            )
+
+            logger.warning(
+                f"[Codex{' ' + label if label else ''}] Response looks incomplete "
+                f"(attempt {attempt}/{MAX_COMPLETION_ATTEMPTS}).{fence_hint}"
+            )
+
+            continuation_messages = list(messages) + [
+                {"role": "assistant", "content": accumulated},
+                {
+                    "role": "user",
+                    "content": (
+                        "Your previous response appears to be incomplete or cut off."
+                        f"{fence_hint} "
+                        "Please continue from exactly where you stopped and bring the "
+                        "documentation to a proper conclusion. Close any open code fences "
+                        "or lists. Do not repeat what you have already written."
+                    ),
+                },
+            ]
+
+            chunk = self.client.chat(
+                messages=continuation_messages,
+                model=self.model,
+                temperature=self.temperature,
+                max_tokens=4096,
+                complete=True,
+            )
+
+            accumulated += chunk
+
+            if not self._looks_truncated(accumulated):
+                logger.info(
+                    f"[Codex{' ' + label if label else ''}] Response completed "
+                    f"after {attempt} structural continuation(s)."
+                )
+                return accumulated
+
+        # Give up: save with an explicit marker so the user can see it
+        logger.error(
+            f"[Codex{' ' + label if label else ''}] Could not obtain a complete response "
+            f"after {MAX_COMPLETION_ATTEMPTS} attempts. Saving partial result."
+        )
+        return accumulated + "\n\n> ⚠️ **[INCOMPLETE]** This document was truncated and could not be completed automatically. Consider splitting the module or increasing `max_tokens`.\n"
+
+    # -- Doc generation ---
+
     def _generate_module_doc(self, module_name: str, chunks: list[str]) -> str:
-        """Send code to LLM and get documentation back."""
+        """
+        Send code to LLM and get documentation back.
+
+        Each chunk is validated for structural completeness (unclosed fences,
+        truncated lists, abrupt endings). Incomplete responses are continued
+        automatically up to MAX_COMPLETION_ATTEMPTS times.
+        """
         all_doc_parts = []
 
         for i, chunk in enumerate(chunks):
@@ -213,51 +376,61 @@ class CodexAgent(BaseAgent):
 
             if is_first and is_last:
                 instruction = (
-                    f"Document the module '{module_name}'. "
-                    "Produce complete documentation following the system prompt format."
+                    f"Document the module '{module_name}' CONCISELY. "
+                    "**MAXIMUM 600 words total**. Focus on: purpose, key classes/functions, "
+                    "dependencies, entry points. Skip trivial getters/setters/boilerplate."
                 )
             elif is_first:
                 instruction = (
-                    f"Document the module '{module_name}' (part {i+1}/{len(chunks)}). "
+                    f"Document the module '{module_name}' CONCISELY (part {i+1}/{len(chunks)}). "
+                    "**MAXIMUM 600 words total**. Focus on: purpose, key classes/functions, "
+                    "dependencies, entry points. Skip trivial getters/setters/boilerplate."
                     "Start the documentation. More parts will follow."
                 )
             else:
                 instruction = (
-                    f"Continuation of module documentation '{module_name}' (part {i+1}/{len(chunks)}). "
+                    f"Continuation of CONCISE module documentation '{module_name}' (part {i+1}/{len(chunks)}). "
+                    "**MAXIMUM 600 words total**. Focus on: purpose, key classes/functions, "
+                    "dependencies, entry points. Skip trivial getters/setters/boilerplate."
                     f"{'Finish the documentation.' if is_last else 'Continue.'} "
                     f"Previous context:\n{all_doc_parts[-1][:500]}..."
                 )
 
             messages = self.build_messages(f"{instruction}\n\nSource code:\n{chunk}")
+            label = f"{module_name} chunk {i+1}/{len(chunks)}"
 
-            response = self.client.chat(
-                messages=messages,
-                model=self.model,
-                temperature=self.temperature,
-                max_tokens=4096,
-            )
+            response = self._call_llm_complete(messages, label=label)
 
             doc_match = re.search(r"```doc_md\s*(.*?)\s*```", response, re.DOTALL)
             if doc_match:
                 all_doc_parts.append(doc_match.group(1))
             else:
-                all_doc_parts.append(response)
+                # No doc_md wrapper found — check if there's an unclosed one
+                # (model started the block but was cut before the closing ```)
+                partial_match = re.search(r"```doc_md\s*(.*)", response, re.DOTALL)
+                if partial_match:
+                    logger.warning(
+                        f"[Codex] Unclosed ```doc_md block in {label}, "
+                        "using partial content."
+                    )
+                    all_doc_parts.append(partial_match.group(1).strip())
+                else:
+                    all_doc_parts.append(response)
 
         return "\n\n".join(all_doc_parts)
 
     def _save_doc(self, module_name: str, content: str) -> str:
         """Save generated documentation to context/docs/."""
-        CONTEXT_DOCS_DIR.mkdir(parents=True, exist_ok=True)
-
-        safe_name = re.sub(r"[^\w\s-]", "_", module_name).strip("_")
-        safe_name = safe_name or "root"
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"codex_{safe_name}_{timestamp}.md"
-        filepath = CONTEXT_DOCS_DIR / filename
-        filepath.write_text(content.strip(), encoding="utf-8")
-
-        logger.info(f"Documentation saved: {filepath}")
-        return str(filepath)
+        try:
+            CONTEXT_DOCS_DIR.mkdir(parents=True, exist_ok=True)
+            filepath = self._doc_path_for(module_name)
+            logger.info(f"[Codex] Writing doc to: {filepath.resolve()}")
+            filepath.write_text(content.strip(), encoding="utf-8")
+            logger.info(f"Documentation saved: {filepath}")
+            return str(filepath)
+        except Exception as e:
+            logger.error(f"[Codex] _save_doc FAILED for {module_name}: {e}")
+            raise
 
     # -- /inventory: quick overview ---
 

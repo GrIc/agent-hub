@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Hub</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f1117;color:#e0e0e0;min-height:100vh;display:flex;flex-direction:column;}
+header{position:sticky;top:0;z-index:100;background-color:#1a1b26;box-shadow:0 2px 4px rgba(0,0,0,0.05);padding:12px 24px;display:flex;justify-content:space-between;align-items:center;}
+header h1{font-size:18px;color:#7aa2f7;}
+#header-right{display:flex;gap:16px;align-items:center;}
+#agent-select{padding:6px 12px;border-radius:8px;border:1px solid #2a2b3a;background:#1a1b26;color:#e0e0e0;font-size:14px;cursor:pointer;}
+#stats-bar{font-size:13px;color:#888;display:flex;gap:16px;}
+.stat-item span{color:#7aa2f7;font-weight:600;}
+#agent-desc{position:sticky;top:60px;z-index:99;background-color:#1a1b26;padding:6px 24px 10px;font-size:12px;color:#666;text-align:center;border-bottom:1px solid #2a2b3a;}
+main{flex:1;max-width:900px;width:100%;margin:0 auto;padding:24px;display:flex;flex-direction:column;}
+#chat{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:16px;padding-bottom:16px;}
+.message{padding:14px 18px;border-radius:12px;max-width:85%;line-height:1.6;word-wrap:break-word;}
+.message.user{background:#1a3a5c;align-self:flex-end;border-bottom-right-radius:4px;white-space:pre-wrap;}
+.message.assistant{background:#1a1b26;border:1px solid #2a2b3a;align-self:flex-start;border-bottom-left-radius:4px;}
+.message.error{background:#3a1a1a;border:1px solid #5a2a2a;color:#ff6b6b;white-space:pre-wrap;}
+.message.system{background:#1a2a1a;border:1px solid #2a3a2a;color:#7adf7a;font-size:13px;align-self:center;white-space:pre-wrap;max-width:95%;}
+.sources{margin-top:10px;padding-top:10px;border-top:1px solid #2a2b3a;font-size:12px;color:#666;}
+.sources span{display:inline-block;background:#2a2b3a;padding:2px 8px;border-radius:4px;margin:2px 4px 2px 0;font-family:monospace;font-size:11px;}
+.duration{font-size:11px;color:#555;margin-top:6px;}
+#input-area{display:flex;gap:10px;padding-top:16px;border-top:1px solid #2a2b3a;}
+#query-input{flex:1;padding:12px 16px;border-radius:10px;border:1px solid #2a2b3a;background:#1a1b26;color:#e0e0e0;font-size:15px;outline:none;resize:none;min-height:48px;max-height:150px;font-family:inherit;}
+#query-input:focus{border-color:#7aa2f7;}
+#query-input::placeholder{color:#555;}
+#send-btn{padding:12px 24px;border-radius:10px;border:none;background:#7aa2f7;color:#0f1117;font-size:15px;font-weight:600;cursor:pointer;}
+#send-btn:hover{background:#5a8af7;}
+#send-btn:disabled{background:#333;color:#666;cursor:wait;}
+#clear-btn{padding:8px 12px;border-radius:8px;border:1px solid #333;background:transparent;color:#888;font-size:12px;cursor:pointer;}
+#clear-btn:hover{border-color:#ff6b6b;color:#ff6b6b;}
+.typing{color:#7aa2f7;font-style:italic;}
+code{background:#2a2b3a;padding:1px 6px;border-radius:4px;font-size:13px;font-family:'JetBrains Mono','Fira Code','Consolas',monospace;}
+.code-block-wrapper{margin:8px 0;border-radius:8px;overflow:hidden;background:#1e1f2e;}
+.code-header{display:flex;justify-content:space-between;align-items:center;padding:6px 12px;background:#161722;border-bottom:1px solid #2a2b3a;}
+.code-lang{font-size:11px;color:#7aa2f7;font-family:monospace;text-transform:uppercase;letter-spacing:.5px;}
+.copy-btn{font-size:11px;color:#888;background:transparent;border:1px solid #333;border-radius:4px;padding:2px 8px;cursor:pointer;transition:all .2s;}
+.copy-btn:hover{color:#e0e0e0;border-color:#7aa2f7;}
+.copy-btn.copied{color:#7adf7a;border-color:#7adf7a;}
+pre{margin:0;overflow-x:auto;}
+pre code{background:none!important;padding:12px;display:block;font-size:13px;line-height:1.5;font-family:'JetBrains Mono','Fira Code','Consolas',monospace;border-radius:0;}
+.mermaid-container{background:#1e1f2e;border-radius:8px;padding:16px;margin:8px 0;overflow-x:auto;}
+.mermaid-container svg{max-width:100%;height:auto;}
+.message.assistant h2,.message.assistant h3,.message.assistant h4{margin:14px 0 6px;color:#c0caf5;}
+.message.assistant h2{font-size:18px;}
+.message.assistant h3{font-size:16px;}
+.message.assistant h4{font-size:14px;}
+.message.assistant li{margin-left:20px;margin-bottom:4px;}
+.message.assistant strong{color:#c0caf5;}
+::-webkit-scrollbar{width:6px;}::-webkit-scrollbar-track{background:transparent;}::-webkit-scrollbar-thumb{background:#2a2b3a;border-radius:3px;}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:false,theme:'dark',themeVariables:{darkMode:true,background:'#1e1f2e',primaryColor:'#7aa2f7',primaryTextColor:'#e0e0e0',lineColor:'#555'}});</script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+</head>
+<body>
+<header>
+  <h1>Agent Hub</h1>
+  <div id="header-right">
+    <select id="agent-select" onchange="switchAgent()"></select>
+    <button id="clear-btn" onclick="clearHistory()">Clear history</button>
+    <div id="stats-bar">
+      <div class="stat-item">Index: <span id="stat-index">-</span></div>
+      <div class="stat-item">Today: <span id="stat-today">-</span></div>
+    </div>
+    <a href="/workspace" style="padding:6px 12px;border-radius:8px;border:1px solid #2a2b3a;color:#888;font-size:12px;text-decoration:none;">Workspace →</a>
+  </div>
+</header>
+<div id="agent-desc">Loading agents...</div>
+<main>
+  <div id="chat"></div>
+  <div id="input-area">
+    <textarea id="query-input" placeholder="Ask a question..." rows="1"></textarea>
+    <button id="send-btn" onclick="sendQuery()">Ask</button>
+  </div>
+</main>
+<script>
+const chat=document.getElementById('chat'),input=document.getElementById('query-input'),btn=document.getElementById('send-btn'),agentSelect=document.getElementById('agent-select'),agentDesc=document.getElementById('agent-desc');
+let currentAgent='expert',sessionId=Math.random().toString(36).substring(7),agents={};
+input.addEventListener('input',()=>{input.style.height='auto';input.style.height=Math.min(input.scrollHeight,150)+'px';});
+input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendQuery();}});
+
+async function loadAgents(){try{const res=await fetch('/api/agents');agents=await res.json();agentSelect.innerHTML='';for(const[name,info]of Object.entries(agents)){const opt=document.createElement('option');opt.value=name;opt.textContent=`${info.emoji} ${name}`;agentSelect.appendChild(opt);}agentSelect.value=currentAgent;updateAgentDesc();}catch(e){console.error('Failed to load agents',e);}}
+function switchAgent(){const prev=currentAgent;currentAgent=agentSelect.value;updateAgentDesc();if(prev!==currentAgent)addSystemMessage(`Switched to ${agents[currentAgent]?.emoji||''} ${currentAgent}`);}
+function updateAgentDesc(){const info=agents[currentAgent];if(info)agentDesc.textContent=`${info.emoji} ${currentAgent} — ${info.desc} (model: ${info.model})`;}
+async function loadStats(){try{const res=await fetch('/api/stats');const data=await res.json();document.getElementById('stat-index').textContent=data.index_size||0;const today=new Date().toISOString().split('T')[0];document.getElementById('stat-today').textContent=(data.queries_by_day||{})[today]||0;}catch(e){}}
+
+function escapeHtml(t){return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+function copyCode(btn){const w=btn.closest('.code-block-wrapper');const c=w&&w.querySelector('code');if(c)navigator.clipboard.writeText(c.textContent).then(()=>{btn.textContent='Copied!';btn.classList.add('copied');setTimeout(()=>{btn.textContent='Copy';btn.classList.remove('copied');},2000);});}
+
+/**
+ * Render markdown to HTML with proper code block and mermaid handling.
+ *
+ * Uses a placeholder approach: code/mermaid blocks are extracted BEFORE
+ * the \n -> <br> replacement, then restored AFTER. This prevents newlines
+ * inside <pre> and <pre class="mermaid"> from being corrupted.
+ */
+function renderMarkdown(content) {
+    var blocks = [];
+    function stash(html) {
+        blocks.push(html);
+        return '\x00BLOCK' + (blocks.length - 1) + '\x00';
+    }
+
+    // Phase 1: stash code and mermaid blocks (protect from \n -> <br>)
+    var s = content
+        .replace(/```mermaid\n([\s\S]*?)```/g, function(m, code) {
+            return stash('<div class="mermaid-container"><pre class="mermaid">' + code + '</pre></div>');
+        })
+        .replace(/```(\w*)\n([\s\S]*?)```/g, function(m, lang, code) {
+            var la = lang || 'text';
+            var escaped = escapeHtml(code.trimEnd());
+            return stash(
+                '<div class="code-block-wrapper">' +
+                '<div class="code-header"><span class="code-lang">' + la + '</span>' +
+                '<button class="copy-btn" onclick="copyCode(this)">Copy</button></div>' +
+                '<pre><code class="language-' + la + '">' + escaped + '</code></pre></div>'
+            );
+        });
+
+    // Phase 2: markdown transforms (no code/mermaid content present — safe)
+    s = s
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/^### (.+)$/gm, '<h4>$1</h4>')
+        .replace(/^## (.+)$/gm, '<h3>$1</h3>')
+        .replace(/^# (.+)$/gm, '<h2>$1</h2>')
+        .replace(/^- (.+)$/gm, '<li>$1</li>')
+        .replace(/\n\n/g, '<br><br>')
+        .replace(/\n/g, '<br>');
+
+    // Phase 3: restore stashed blocks
+    s = s.replace(/\x00BLOCK(\d+)\x00/g, function(m, i) {
+        return blocks[parseInt(i)];
+    });
+
+    return s;
+}
+
+function addMessage(role, content, sources, durationMs) {
+    const div = document.createElement('div');
+    div.className = 'message ' + role;
+    if (role === 'assistant') {
+        div.innerHTML = renderMarkdown(content);
+        div.querySelectorAll('pre code').forEach(function(block) {
+            try { hljs.highlightElement(block); } catch(e) {}
+        });
+        if (sources && sources.length > 0) {
+            const srcDiv = document.createElement('div');
+            srcDiv.className = 'sources';
+            srcDiv.innerHTML = 'Sources: ' + sources.map(function(s) {
+                return '<span>' + s.file + ' (' + (s.score * 100).toFixed(0) + '%)</span>';
+            }).join('');
+            div.appendChild(srcDiv);
+        }
+        if (durationMs) {
+            const durDiv = document.createElement('div');
+            durDiv.className = 'duration';
+            durDiv.textContent = (durationMs / 1000).toFixed(1) + 's';
+            div.appendChild(durDiv);
+        }
+    } else {
+        div.textContent = content;
+    }
+    chat.appendChild(div);
+    chat.scrollTop = chat.scrollHeight;
+    try { mermaid.run({ nodes: div.querySelectorAll('.mermaid') }); } catch(e) {}
+}
+
+function addSystemMessage(text){const div=document.createElement('div');div.className='message system';div.textContent=text;chat.appendChild(div);chat.scrollTop=chat.scrollHeight;}
+async function clearHistory(){try{await fetch('/api/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sessionId,agent:currentAgent})});chat.innerHTML='';addSystemMessage('History cleared for '+currentAgent);}catch(e){}}
+async function sendQuery(){
+    const query=input.value.trim();if(!query)return;input.value='';input.style.height='auto';btn.disabled=true;addMessage('user',query);
+    const typing=document.createElement('div');typing.className='message assistant typing';typing.textContent='Thinking...';chat.appendChild(typing);chat.scrollTop=chat.scrollHeight;
+    try{const res=await fetch('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query,agent:currentAgent,session_id:sessionId})});chat.removeChild(typing);
+    if(res.ok){const data=await res.json();addMessage('assistant',data.answer,data.sources,data.duration_ms);}else{const data=await res.json();addMessage('error','Error: '+(data.error||'Request failed'));}
+    }catch(e){chat.removeChild(typing);addMessage('error','Network error: '+e.message);}
+    btn.disabled=false;input.focus();loadStats();
+}
+loadAgents();loadStats();
+addSystemMessage('Welcome to Agent Hub! 🧠\n\nThe Expert agent can help you with:\n  • Code Q&A — How does X work? Where is Y defined?\n  • Code Review — Review code for bugs, security, performance\n  • Debugging — Analyze error traces and find root causes\n  • Architecture — How to structure new features\n  • Refactoring — Improve code while keeping compatibility\n\nSwitch agents in the top bar for specialized workflows.\nOpen the Workspace (top right) for the full pipeline experience.\n\nAll answers are grounded in the indexed codebase — no hallucination.');
+</script>
+</body>
+</html>
