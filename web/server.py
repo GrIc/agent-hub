@@ -342,6 +342,18 @@ def create_app(cfg: dict) -> FastAPI:
             return JSONResponse({"error": "Not found"}, status_code=404)
         content = filepath.read_text(encoding="utf-8", errors="replace")
         return {"date": date, "content": content}
+    
+    try:
+        from web.ide_routes import register_ide_routes
+        register_ide_routes(app, cfg)
+    except Exception as e:
+        logger.warning(f"IDE routes failed: {e}")
+
+    try:
+        from src.mcp_server import mount_mcp_sse
+        mount_mcp_sse(app, cfg)
+    except Exception as e:
+        logger.warning(f"MCP mount failed: {e}")
 
 
     # -- Documentation Hub routes --

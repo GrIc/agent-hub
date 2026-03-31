@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "agent-hub": {
+      "command": "python",
+      "args": ["-m", "src.mcp_server"],
+      "cwd": "/app/agent-hub",
+      "env": {
+        "PYTHONPATH": "/app/agent-hub"
+      }
+    }
+  }
+}

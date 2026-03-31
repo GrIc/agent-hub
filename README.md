@@ -21,6 +21,7 @@ Uses **ChromaDB** for vector storage with optional cross-encoder reranking.
 - [Custom Agents](#custom-agents)
 - [Project Pipeline](#project-pipeline)
 - [Time-Travel Documentation](#time-travel-documentation)
+- [IDE Integration](#ide-integration)
 - [Docker Deployment](#docker-deployment)
 - [CI/CD (GitLab)](#cicd-gitlab)
 - [Project Structure](#project-structure)
@@ -315,6 +316,126 @@ Stored in `context/changelog/YYYY-MM-DD.md`. Viewable at `/docs` → Changelog t
 
 ---
 
+## IDE Integration
+
+Agent Hub exposes its 7 tools via two integrations: **Open WebUI** (web chat) and **Continue.dev** (IDE extensions).
+
+### Architecture
+
+```
+ VS Code / IntelliJ                Your browser
+ ┌───────────────┐                ┌───────────────┐
+ │  Continue.dev │                │  Open WebUI   │
+ │  (extension)  │                │  (Docker)     │
+ └──────┬────────┘                └──────┬────────┘
+        │ MCP SSE                        │ OpenAPI
+        │                                │
+        │                         ┌──────┴────────┐
+        │                         │     MCPO      │
+        │                         │ MCP→OpenAPI   │
+        │                         └──────┬────────┘
+        │                                │ MCP stdio
+        │                                │
+ ┌──────┴────────────────────────────────┴────────┐
+ │              Agent Hub MCP Server              │
+ │        src/mcp_server.py (7 tools)             │
+ ├────────────────────────────────────────────────┤
+ │  Expert Agent │ Developer Agent │ RAG Store    │
+ │  (code Q&A)   │ (file edits)   │ (ChromaDB)    │
+ ├────────────────────────────────────────────────┤
+ │           vLLM (Mistral models)                │
+ └────────────────────────────────────────────────┘
+```
+
+### Setup: Open WebUI
+
+**1. Start Agent Hub + Open WebUI + MCPO**
+
+```bash
+# First, install MCP package (if not already done)
+pip install mcp[server]
+
+# Start all services
+docker compose -f docker-compose.yml -f docker-compose.ide.yml up -d
+
+# Open WebUI is at http://localhost:3000
+# Create your admin account on first visit
+```
+
+**2. Connect Agent Hub tools in Open WebUI**
+
+1. Click the **gear icon** (Admin Settings)
+2. Navigate to **External Tools** → **+ Add**
+3. **Type**: OpenAPI
+4. **URL**: `http://mcpo:8000` (if running on same machine) or `http://localhost:8001` (from host)
+5. **Save**
+
+The 7 Agent Hub tools appear in the tool list automatically. Enable them in any chat:
+- Click **+ Tools** in the chat interface
+- Check boxes for the tools you want (expert_ask, file_edit, etc.)
+- Start chatting
+
+**Tools available**:
+| Tool | Description |
+|------|-------------|
+| `expert_ask` | Q&A about code — RAG-powered code understanding |
+| `file_edit` | Apply git diffs to files |
+| `deliverables_list` | List deliverables for a project |
+| `deliverables_apply` | Apply specs/requirements to generate diffs |
+| `workspace_tree` | Browse workspace file tree |
+| `search_rag` | Search the RAG index directly |
+| `ingest_files` | Index additional files into RAG |
+
+### Setup: Continue.dev (VS Code)
+
+**1. Install Continue**
+
+- Open VS Code Extensions
+- Search for "Continue" and install from the marketplace
+- Or install from https://continue.dev
+
+**2. Create the MCP config**
+
+```bash
+# Create config directory
+mkdir -p .continue/mcpServers
+
+# Copy the Agent Hub SSE config (when Agent Hub is running)
+# See files: continue-sse.yaml (remote), continue-stdio.yaml (local)
+cp continue-sse.yaml .continue/mcpServers/agent-hub.yaml
+```
+
+**3. Using Continue in VS Code**
+
+1. Open the **Continue sidebar** (icon in the left panel)
+2. Switch to **Agent** mode (MCP tools only work in Agent mode)
+3. Ask anything and the Agent Hub tools will be available:
+   - "Use expert_ask to explain the authentication module"
+   - "List deliverables for project my-feature"
+   - "Apply specifications_v2.md from project my-feature in dry-run mode"
+
+### Setup: Continue.dev (IntelliJ IDEA)
+
+Same process as VS Code:
+1. Install "Continue" from JetBrains Marketplace
+2. Copy `.continue/mcpServers/agent-hub.yaml` config
+3. Switch to Agent mode and use the same prompts
+
+Continue.dev supports VS Code, IntelliJ, PyCharm, WebStorm, and other JetBrains IDEs.
+
+### Why this approach
+
+| Aspect | Custom extensions | Continue.dev + Open WebUI |
+|--------|---|---|
+| Maintenance | You maintain TS + Kotlin code | Zero client code |
+| Updates | Manual rebuild per IDE update | Community-maintained, auto-updates |
+| Chat UX | Basic | Full: voice, RBAC, model switching |
+| IDE support | VS Code + IntelliJ | VS Code + JetBrains + Neovim + Vim |
+| Other MCP tools | Only Agent Hub | Mix Agent Hub with any MCP server |
+| Deploy time | Hours (compile, package) | Minutes (config file) |
+
+---
+
 ## Web Interface
 
 ```bash
@@ -346,25 +467,44 @@ Documentation browser with three tabs: **Pyramid** (L0→L3 docs), **RAG Coverag
 
 ### Services
 
+Agent Hub has **two deployment modes**:
+
+**Web-only** (`docker-compose.yml`):
 | Container | Purpose |
 |---|---|
 | `agent-hub-web` | Web UI (expert + workspace + docs) on port 8080 |
 | `agent-hub-indexer` | Periodic indexer (watch → synthesize → ingest) |
 
+**With IDE integration** (add `docker-compose.ide.yml`):
+| Container | Purpose |
+|---|---|
+| `agent-hub-web` | Web UI (expert + workspace + docs) on port 8080 |
+| `agent-hub-indexer` | Periodic indexer (watch → synthesize → ingest) |
+| `open-webui` | Chat frontend for Agent Hub on port 3000 |
+| `mcpo` | MCP↔OpenAPI bridge for Open WebUI on port 8001 |
+
 ### Setup
 
 ```bash
 cp .env.example .env             # Edit credentials
+
+# Web-only (no IDE integration)
 ./scripts/deploy.sh setup        # First-time setup
 docker compose up -d             # Start services
-docker compose logs -f web       # Watch logs
+
+# With IDE integration
+docker compose -f docker-compose.yml -f docker-compose.ide.yml up -d
 ```
 
-### docker-compose.yml
+### Volumes & Persistence
 
-The web container mounts workspace, context, agents, and reports as read-only volumes. The indexer mounts context and reports as read-write (it generates docs).
+All services share the same volumes:
+- `workspace/` — your codebase (read-only for web, read-write for indexer)
+- `context/` — generated docs (updated by indexer)
+- `projects/` — project data (updated by agents)
+- `.vectordb/` — ChromaDB index (shared by web + agents)
 
-Both containers share the `.vectordb` volume so the indexer can update the RAG index that the web container reads.
+The indexer auto-generates documentation (`/scan`, `synthesize`, `/ingest`) on a schedule. The web and IDE tools consume the pre-built index.
 
 ### Management
 
@@ -375,6 +515,19 @@ Both containers share the `.vectordb` volume so the indexer can update the RAG i
 ./scripts/deploy.sh restart      # Restart services
 ./scripts/deploy.sh stop         # Stop services
 ./scripts/deploy.sh reset-index  # Clear index and restart
+```
+
+### Viewing logs
+
+```bash
+# All services
+docker compose logs -f
+
+# Specific service
+docker compose logs -f web       # Agent Hub web
+docker compose logs -f indexer   # Indexer
+docker compose logs -f open-webui  # Open WebUI
+docker compose logs -f mcpo      # MCPO bridge
 ```
 
 ---
@@ -458,11 +611,22 @@ agent-hub/
 │
 ├── web/
 │   ├── server.py             ← FastAPI app (all routes)
+│   ├── ide_routes.py         ← IDE integration REST fallback routes
 │   ├── workspace_routes.py   ← /workspace API routes
 │   ├── docs_routes.py        ← /docs API routes
 │   ├── index.html            ← Expert chat UI
 │   ├── workspace.html        ← 3-panel workspace UI
 │   └── docs.html             ← Documentation Hub UI
+│
+├── src/
+│   └── mcp_server.py         ← MCP server for IDE integration (7 tools)
+│
+├── mcp-configs/
+│   └── mcpo-config.json      ← MCPO bridge config for Docker
+│
+├── docker-compose.ide.yml    ← Open WebUI + MCPO services (optional)
+├── continue-sse.yaml         ← Continue.dev config (MCP SSE, remote)
+├── continue-stdio.yaml       ← Continue.dev config (MCP stdio, local)
 │
 └── scripts/
     ├── deploy.sh             ← Docker management helper

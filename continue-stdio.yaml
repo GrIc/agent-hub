@@ -1,0 +1,28 @@
+# .continue/mcpServers/agent-hub-local.yaml
+#
+# Continue.dev MCP configuration for Agent Hub — LOCAL / STDIO mode.
+# Use this when you want to run Agent Hub's MCP server as a subprocess
+# without a running web server.
+#
+# Continue will spawn `python -m src.mcp_server` and communicate via stdio.
+#
+# Prerequisites:
+#   - Agent Hub repo cloned locally
+#   - Python environment with dependencies installed
+#   - .env file configured with API_BASE_URL and API_KEY
+#
+# Adjust `cwd` to point to your agent-hub directory.
+
+name: Agent Hub (local)
+version: 0.1.0
+schema: v1
+
+mcpServers:
+  - name: Agent Hub
+    command: python
+    args:
+      - "-m"
+      - "src.mcp_server"
+    cwd: /path/to/agent-hub
+    env:
+      PYTHONPATH: /path/to/agent-hub

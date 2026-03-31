@@ -9,3 +9,4 @@ uvicorn>=0.20
 pymupdf>=1.23
 python-pptx>=0.6
 python-docx>=0.8
+mcp[server]>=1.0.0

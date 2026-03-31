@@ -1,0 +1,71 @@
+# docker-compose.ide.yml
+#
+# IDE Integration stack — add this alongside your existing docker-compose.yml.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.ide.yml up -d
+#
+# This adds:
+#   - Open WebUI: polished chat UI pointing at your vLLM + Agent Hub MCP tools
+#   - MCPO: MCP-to-OpenAPI proxy that bridges Agent Hub's MCP server to Open WebUI
+#
+# Your existing Agent Hub web + indexer services continue to run unchanged.
+# Continue.dev connects directly to Agent Hub's MCP SSE endpoint (no extra container).
+
+services:
+
+  # ---------------------------------------------------------------
+  # MCPO: MCP-to-OpenAPI proxy for Open WebUI
+  # Wraps Agent Hub's MCP stdio server into an OpenAPI endpoint
+  # that Open WebUI can consume as a tool server.
+  # ---------------------------------------------------------------
+  mcpo:
+    image: ghcr.io/open-webui/mcpo:main
+    container_name: agent-hub-mcpo
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./mcp-configs/mcpo-config.json:/app/config/config.json:ro
+      - .:/app/agent-hub:ro           # Mount agent-hub source for stdio MCP
+      - ./.env:/app/agent-hub/.env:ro  # Pass env vars to MCP server
+      - ./.vectordb:/app/agent-hub/.vectordb  # Share vector DB
+      - ./context:/app/agent-hub/context      # Share context docs
+      - ./workspace:/app/agent-hub/workspace  # Share workspace
+      - ./projects:/app/agent-hub/projects    # Share projects
+    working_dir: /app
+    command: mcpo --config /app/config/config.json
+    restart: unless-stopped
+    networks:
+      - agent-hub-net
+
+  # ---------------------------------------------------------------
+  # Open WebUI: polished multi-user chat interface
+  # Connects to your vLLM backend for models + MCPO for Agent Hub tools
+  # ---------------------------------------------------------------
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: agent-hub-openwebui
+    ports:
+      - "3000:8080"
+    environment:
+      # Point at your existing vLLM / OpenAI-compatible API
+      - OPENAI_API_BASE_URL=${API_BASE_URL}
+      - OPENAI_API_KEY=${API_KEY:-empty}
+      # Disable Ollama (we use vLLM)
+      - OLLAMA_BASE_URL=
+      # Secret key for auth (generate one: openssl rand -hex 32)
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY:-changeme}
+    volumes:
+      - open-webui-data:/app/backend/data
+    restart: unless-stopped
+    depends_on:
+      - mcpo
+    networks:
+      - agent-hub-net
+
+volumes:
+  open-webui-data:
+
+networks:
+  agent-hub-net:
+    # Use the same network as your main docker-compose.yml
+    # If your main compose uses a different network name, adjust here.
+    external: false
