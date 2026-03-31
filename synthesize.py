@@ -284,6 +284,15 @@ Produce a GROUP OVERVIEW ({min_words}-{max_words} words) that covers:
 
 Write in English. Be factual. Cite specific class/module names.
 
+GROUNDING RULES:
+- ONLY describe modules, classes, patterns, and technologies that are EXPLICITLY
+  mentioned in the sub-module summaries below. Do not infer or extrapolate.
+- If a sub-module summary does not mention a specific class or pattern, do NOT
+  add it to the group overview. Omission is better than invention.
+- Every class name, module name, and technology you cite must appear verbatim
+  in at least one of the input summaries.
+- If the input summaries are thin or vague, produce a proportionally shorter overview.
+
 Sub-module summaries (sorted by importance, heaviest first):
 """
 
@@ -313,6 +322,14 @@ Produce a LAYER OVERVIEW (800-1500 words) that covers:
 
 Write in English. Be factual.
 
+GROUNDING RULES:
+- ONLY describe modules, classes, frameworks, and patterns that are EXPLICITLY
+  mentioned in the module summaries below. Do not infer or extrapolate.
+- If a module summary does not mention a specific technology, class, or pattern,
+  do NOT include it in the layer overview.
+- Every name you cite must appear verbatim in at least one input summary.
+- If information is sparse, produce a shorter overview. Do not pad with guesses.
+
 Module summaries (sorted by importance, heaviest first):
 """
 
@@ -336,6 +353,17 @@ Produce an ARCHITECTURE OVERVIEW (1500-2500 words) that covers:
 
 Write in English. Be precise. Reference specific module and class names.
 
+GROUNDING RULES:
+- ONLY describe layers, modules, patterns, and technologies that are EXPLICITLY
+  mentioned in the layer overviews below. This is a SYNTHESIS, not speculation.
+- If a layer overview does not mention a specific integration, pattern, or technology,
+  do NOT include it in the architecture overview. Fabricated content will corrupt
+  the documentation system used by all development agents.
+- Every module name, class name, framework, and technology you cite must appear
+  verbatim in at least one input layer overview.
+- For the "Known gaps" section, list things the overviews do NOT cover — do not
+  invent coverage that doesn't exist.
+  
 Layer overviews:
 """
 
@@ -360,6 +388,11 @@ details, lengthy prose that duplicates what the class names already convey.
 
 Write in English. Be dense and factual -- this feeds an architecture synthesis \
 engine.
+
+GROUNDING RULES:
+- ONLY preserve information that is explicitly stated in the document below.
+- NEVER add classes, methods, patterns, or technologies not mentioned in the source.
+- If something is unclear in the source, omit it rather than guess.
 """
 
 

@@ -11,6 +11,7 @@ Generated docs go to context/docs/ to enrich RAG for all agents.
 import logging
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -40,6 +41,23 @@ MAX_CHUNK_FOR_LLM = 24_000
 
 # How many times to try getting a complete response for a single chunk
 MAX_COMPLETION_ATTEMPTS = 4
+
+# ---------------------------------------------------------------------------
+# Grounding instruction appended to EVERY codex LLM call.
+# This is the primary defense against hallucination.
+# ---------------------------------------------------------------------------
+GROUNDING_INSTRUCTION = """
+GROUNDING RULES (mandatory — violations corrupt the entire documentation system):
+- ONLY describe classes, methods, variables, and imports that appear VERBATIM in the
+  source code above. If a name does not appear in the source, do NOT mention it.
+- NEVER infer, extrapolate, or invent functionality. If the source code does not show
+  a behavior, do not describe it.
+- NEVER add classes, methods, fields, or imports that are not in the source.
+- If the code is too complex to fully document from what is visible, write
+  "[NOT VISIBLE IN PROVIDED CODE]" for the unclear parts.
+- If the module is simple, produce a SHORT document. Do not pad with guesses.
+- Every file path you cite must match exactly what appears in the [FILE: ...] headers.
+"""
 
 
 class CodexAgent(BaseAgent):
@@ -140,6 +158,33 @@ class CodexAgent(BaseAgent):
             try:
                 doc = self._generate_module_doc(module_name, chunks)
                 if doc:
+                    # Validate: check that doc doesn't hallucinate names
+                    hall_count, validation_msg = self._validate_doc(doc, combined)
+
+                    if hall_count > 8:
+                        # Too many hallucinations — reject and retry with stronger prompt
+                        logger.warning(
+                            f"[Codex] REJECTED {module_name}: {hall_count} hallucinated names. "
+                            "Retrying with stricter grounding."
+                        )
+                        results.append(f"  Rejected (hallucination: {hall_count} suspicious names). Retrying...")
+
+                        doc = self._generate_module_doc_strict(module_name, chunks)
+                        if doc:
+                            hall_count, validation_msg = self._validate_doc(doc, combined)
+
+                        if not doc or hall_count > 8:
+                            results.append(f"  SKIPPED {module_name}: hallucination persists after retry.")
+                            logger.error(
+                                f"[Codex] SKIPPED {module_name}: still {hall_count} "
+                                "hallucinated names after strict retry."
+                            )
+                            continue
+
+                    if validation_msg:
+                        doc += f"\n\n> ⚠️ **Validation warnings:** {validation_msg}\n"
+                        logger.warning(f"[Codex] Validation issues for {module_name}: {validation_msg}")
+
                     filepath = self._save_doc(module_name, doc)
                     generated_docs.append(filepath)
                     results.append(f"  Doc generated: {filepath}")
@@ -329,7 +374,8 @@ class CodexAgent(BaseAgent):
                         f"{fence_hint} "
                         "Please continue from exactly where you stopped and bring the "
                         "documentation to a proper conclusion. Close any open code fences "
-                        "or lists. Do not repeat what you have already written."
+                        "or lists. Do not repeat what you have already written. "
+                        "REMINDER: only describe what is in the source code. Do not invent."
                     ),
                 },
             ]
@@ -358,15 +404,58 @@ class CodexAgent(BaseAgent):
         )
         return accumulated + "\n\n> ⚠️ **[INCOMPLETE]** This document was truncated and could not be completed automatically. Consider splitting the module or increasing `max_tokens`.\n"
 
+    # -- Validation: detect hallucinated names ---
+
+    @staticmethod
+    def _validate_doc(doc: str, source_code: str) -> tuple[int, str]:
+        """
+        Generic and flexible verification of hallucinations.
+        Works for any language without knowing its syntax.
+        """
+        # 1. Only extract what the LLM has formatted as code
+        # Capture everything between backticks, except spaces
+        doc_refs = set(re.findall(r'`([^`\s]+)`', doc))
+        
+        # We can also add the words in bold if they look like CamelCase/PascalCase
+        doc_refs |= set(re.findall(r'\*\*([A-Z][a-zA-Z0-9_]+)\*\*', doc))
+
+        # 2. Basic filtering to avoid false positives on very short words
+        doc_refs = {ref for ref in doc_refs if len(ref) >= 3}
+
+        if not doc_refs:
+            return (0, "")
+
+        suspicious = []
+        for ref in sorted(doc_refs):
+            # Optional cleaning if the LLM includes parentheses, ex: `myFunction()`
+            clean_ref = ref.replace("()", "").split(".")[0] 
+            
+            # 3. MAGIC VERIFICATION: Search for pure and hard substring
+            if clean_ref not in source_code:
+                suspicious.append(ref)
+
+        # 4. Evaluation of the tolerance (ex: we accept up to 25% of "not found" words
+        # because they are likely to be language keywords like 'string', 'List', 'dict')
+        hallucination_ratio = len(suspicious) / len(doc_refs)
+
+        # We trigger the error only if there are many suspicious words AND a high ratio
+        if len(suspicious) > 5 and hallucination_ratio > 0.25:
+            return (
+                len(suspicious),
+                f"Possibles hallucinations (ratio {hallucination_ratio:.0%}). "
+                f"{len(suspicious)} names not found in the code (ex: {', '.join(suspicious[:5])})."
+            )
+            
+        return (0, "")
+
     # -- Doc generation ---
 
     def _generate_module_doc(self, module_name: str, chunks: list[str]) -> str:
         """
         Send code to LLM and get documentation back.
 
-        Each chunk is validated for structural completeness (unclosed fences,
-        truncated lists, abrupt endings). Incomplete responses are continued
-        automatically up to MAX_COMPLETION_ATTEMPTS times.
+        ANTI-HALLUCINATION: every chunk prompt includes GROUNDING_INSTRUCTION
+        which forces the LLM to only document what it can see in the source.
         """
         all_doc_parts = []
 
@@ -374,26 +463,35 @@ class CodexAgent(BaseAgent):
             is_first = i == 0
             is_last = i == len(chunks) - 1
 
+            # Build the file listing for grounding reference
+            file_list = ", ".join(re.findall(r'\[FILE: (.+?)\]', chunk))
+
             if is_first and is_last:
                 instruction = (
                     f"Document the module '{module_name}' CONCISELY. "
                     "**MAXIMUM 600 words total**. Focus on: purpose, key classes/functions, "
-                    "dependencies, entry points. Skip trivial getters/setters/boilerplate."
+                    "dependencies, entry points. Skip trivial getters/setters/boilerplate. "
+                    f"Files in this module: {file_list}\n"
+                    f"{GROUNDING_INSTRUCTION}"
                 )
             elif is_first:
                 instruction = (
                     f"Document the module '{module_name}' CONCISELY (part {i+1}/{len(chunks)}). "
                     "**MAXIMUM 600 words total**. Focus on: purpose, key classes/functions, "
-                    "dependencies, entry points. Skip trivial getters/setters/boilerplate."
-                    "Start the documentation. More parts will follow."
+                    "dependencies, entry points. Skip trivial getters/setters/boilerplate. "
+                    f"Files in this chunk: {file_list}\n"
+                    f"Start the documentation. More parts will follow.\n"
+                    f"{GROUNDING_INSTRUCTION}"
                 )
             else:
                 instruction = (
                     f"Continuation of CONCISE module documentation '{module_name}' (part {i+1}/{len(chunks)}). "
                     "**MAXIMUM 600 words total**. Focus on: purpose, key classes/functions, "
-                    "dependencies, entry points. Skip trivial getters/setters/boilerplate."
+                    "dependencies, entry points. Skip trivial getters/setters/boilerplate. "
+                    f"Files in this chunk: {file_list}\n"
                     f"{'Finish the documentation.' if is_last else 'Continue.'} "
-                    f"Previous context:\n{all_doc_parts[-1][:500]}..."
+                    f"Previous context:\n{all_doc_parts[-1][:500]}...\n"
+                    f"{GROUNDING_INSTRUCTION}"
                 )
 
             messages = self.build_messages(f"{instruction}\n\nSource code:\n{chunk}")
@@ -405,14 +503,69 @@ class CodexAgent(BaseAgent):
             if doc_match:
                 all_doc_parts.append(doc_match.group(1))
             else:
-                # No doc_md wrapper found — check if there's an unclosed one
-                # (model started the block but was cut before the closing ```)
                 partial_match = re.search(r"```doc_md\s*(.*)", response, re.DOTALL)
                 if partial_match:
                     logger.warning(
                         f"[Codex] Unclosed ```doc_md block in {label}, "
                         "using partial content."
                     )
+                    all_doc_parts.append(partial_match.group(1).strip())
+                else:
+                    all_doc_parts.append(response)
+
+        return "\n\n".join(all_doc_parts)
+
+    def _generate_module_doc_strict(self, module_name: str, chunks: list[str]) -> str:
+        """
+        Strict retry: generate documentation with an extremely constrained prompt.
+        Used when the first attempt produced too many hallucinated names.
+
+        Key differences from _generate_module_doc:
+        - Lower temperature (0.1 instead of agent default)
+        - Explicit "ENUMERATION ONLY" instruction — no prose allowed
+        - Forces a structured format that leaves no room for invention
+        """
+        all_doc_parts = []
+
+        for i, chunk in enumerate(chunks):
+            file_list = ", ".join(re.findall(r'\[FILE: (.+?)\]', chunk))
+
+            instruction = (
+                f"Document the module '{module_name}' in STRICT ENUMERATION mode.\n"
+                f"Files: {file_list}\n\n"
+                "OUTPUT FORMAT — follow this EXACTLY:\n"
+                "1. Module purpose: ONE sentence.\n"
+                "2. For EACH file, list:\n"
+                "   - File path (from the [FILE:] header)\n"
+                "   - Each class/interface name (copy-paste from source)\n"
+                "   - For each class: its public methods (copy-paste the signatures)\n"
+                "   - Imports (copy-paste the import lines)\n"
+                "3. Dependencies: list only what appears in import statements.\n\n"
+                "ABSOLUTE RULES:\n"
+                "- Copy-paste names EXACTLY from the source code. Do not rephrase.\n"
+                "- If a file has no classes (e.g., config file), say 'No classes'.\n"
+                "- Do NOT describe what methods do. Just list them.\n"
+                "- Do NOT add any class, method, or import that is not in the source.\n"
+                "- Shorter is better. An empty doc is better than a wrong doc."
+            )
+
+            messages = self.build_messages(f"{instruction}\n\nSource code:\n{chunk}")
+
+            # Use lower temperature for strict mode
+            response = self.client.chat(
+                messages=messages,
+                model=self.model,
+                temperature=0.1,
+                max_tokens=4096,
+                complete=True,
+            )
+
+            doc_match = re.search(r"```doc_md\s*(.*?)\s*```", response, re.DOTALL)
+            if doc_match:
+                all_doc_parts.append(doc_match.group(1))
+            else:
+                partial_match = re.search(r"```doc_md\s*(.*)", response, re.DOTALL)
+                if partial_match:
                     all_doc_parts.append(partial_match.group(1).strip())
                 else:
                     all_doc_parts.append(response)

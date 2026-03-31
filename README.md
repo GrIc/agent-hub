@@ -10,42 +10,36 @@ Uses **ChromaDB** for vector storage with optional cross-encoder reranking.
 
 ---
 
-## What it does
+## Table of Contents
 
-Agent Hub gives your development team **AI agents that actually know your codebase**. Instead of generic LLM answers, every response is grounded in your indexed code through RAG — no hallucination.
-
-**9 core agents** work together through a pipeline:
-
-```
-notes/ → portfolio → specifier → planner → storyteller → presenter → developer
-         (requirements) (specs)    (roadmap) (synthesis)    (deck)      (diffs)
-```
-
-Plus an always-on **expert** agent for daily code Q&A, review, and debugging.
-
-**3 web interfaces**:
-
-| Page | URL | Purpose |
-|---|---|---|
-| Expert | `/` | Quick code Q&A with any agent |
-| Workspace | `/workspace` | Full pipeline with 3-panel UI (file tree, chat, preview) |
-| Docs Hub | `/docs` | Browse documentation pyramid, RAG coverage, changelog |
-
-Everything runs on your infrastructure. Your code never leaves your network.
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [Warming Up: RAG Pipeline](#warming-up-rag-pipeline)
+- [Web Interface](#web-interface)
+- [CLI Usage](#cli-usage)
+- [Agents](#agents)
+- [Custom Agents](#custom-agents)
+- [Project Pipeline](#project-pipeline)
+- [Time-Travel Documentation](#time-travel-documentation)
+- [Docker Deployment](#docker-deployment)
+- [CI/CD (GitLab)](#cicd-gitlab)
+- [Project Structure](#project-structure)
 
 ---
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/GrIc/agent-hub.git
+git clone https://github.com/youruser/agent-hub.git
 cd agent-hub
 pip install -r requirements.txt
 cp .env.example .env          # Edit with your API credentials
 ```
 
+### First run: index your codebase
+
 ```bash
-# Point to your codebase
+# 1. Symlink or copy your codebase into workspace/
 ln -s /path/to/your/code workspace
 
 # Scan, synthesize, index
@@ -64,12 +58,12 @@ python run.py --agent expert --skip-ingest    # CLI mode
 
 Two files, clear separation:
 
-| File | Contains | In `.gitignore` |
+| File | Contains | Versioned |
 |---|---|---|
-| `.env` | API keys, retry settings, Docker paths | Yes |
-| `config.yaml` | Models, agents, RAG, domain config | No |
+| `.env` | Secrets + environment (API keys, retry, Docker paths) | No (`.gitignore`) |
+| `config.yaml` | Application config (models, agents, RAG, domain) | Yes |
 
-### `.env`
+### `.env` — Secrets & Environment
 
 ```bash
 API_BASE_URL=https://api.openai.com/v1    # Any OpenAI-compatible endpoint
@@ -121,7 +115,7 @@ This context is injected into all agent prompts automatically.
 
 ---
 
-## RAG Pipeline
+## Warming Up: RAG Pipeline
 
 Agent Hub builds a **documentation pyramid** from your code:
 
@@ -133,7 +127,43 @@ L3  Per-file Documentation         (1 per source file)
     Raw Source Code                 (chunked workspace files)
 ```
 
-### Build the pyramid
+### Step-by-step
+
+```bash
+# 1. CODEX: Scan workspace, generate L3 docs
+python run.py --agent codex --skip-ingest
+> /scan                          # Scans all files, generates context/docs/codex_*.md
+
+# 2. SYNTHESIZE: Build the doc pyramid (L0/L1/L2)
+python synthesize.py             # Bottom-up: L3 → L2 → L1 → L0
+python synthesize.py --dry-run   # Preview without generating
+python synthesize.py --force     # Rebuild everything
+
+# 3. INGEST: Index into ChromaDB
+python run.py --ingest           # Index context/ + workspace/ + reports/
+python run.py --clear-index      # Delete and rebuild from scratch
+
+# 4. WATCH: Incremental updates (detect changes, re-document, update RAG)
+python watch.py                  # Process changed files since last run
+python watch.py --status         # Show what would change
+python watch.py --reset          # Clear state, next run processes everything
+```
+
+### Hierarchical search
+
+When an agent queries the RAG, the system does:
+1. **Pass 1**: Search synthesis docs (L0, L1, L2) for architectural context
+2. **Pass 2**: Search detailed docs (L3, code) for implementation specifics
+3. **Rerank**: Cross-encoder reranking on each pass (if configured)
+4. **Merge**: Deduplicate and sort by relevance
+
+This ensures architecture questions get high-level answers while code questions get implementation details.
+
+---
+
+## Web Interface
+
+Agent Hub has three web pages, all served by the same FastAPI server:
 
 ```bash
 python run.py --agent codex -s    # Scan workspace → L3 docs
@@ -144,19 +174,41 @@ python run.py --ingest            # Index everything into ChromaDB
 ### Incremental updates
 
 ```bash
-python watch.py                   # Detect changes, re-document, update RAG
-python watch.py --status          # Show what would change
+python run.py                                      # Interactive agent menu
+python run.py --agent specifier --project my-feat   # Direct agent + project
+python run.py --agent expert --skip-ingest          # Skip indexing
+python run.py --ingest                              # Index-only mode
+python run.py --clean                               # Delete index + outputs
 ```
 
-The Docker indexer runs this automatically on a schedule.
+### Global commands (available in all agents)
 
-### Hierarchical search
+| Command | Description |
+|---|---|
+| `/help` | Show available commands |
+| `/save` | Summarize session and save as a report |
+| `/reports` | List saved reports |
+| `/undo` | Delete the last report |
+| `/history` | Show recent conversation history |
+| `/clear` | Clear conversation history |
+| `/switch` | Switch to another agent |
+| `/reindex` | Re-index documents into RAG |
+| `/pipeline` | Start the project pipeline |
+| `/pipeline status` | Show pipeline progress |
+| `/pipeline from specifier` | Resume from a specific step |
+| `/quit` | Exit |
 
-When an agent queries the RAG:
-1. **Pass 1**: Search synthesis docs (L0-L2) for architecture context
-2. **Pass 2**: Search detailed docs (L3, code) for implementation details
-3. **Rerank**: Cross-encoder reranking (if configured)
-4. **Merge**: Deduplicate and return top results
+### Project commands (project-scoped agents only)
+
+| Command | Description |
+|---|---|
+| `/load` | Load project notes and upstream documents |
+| `/status` | Project overview (notes, outputs, reports) |
+| `/draft` | Generate a draft document |
+| `/finalize` | Generate final version |
+| `/alternative` | Propose a radically different approach |
+| `/versions [type]` | List all versions of a document |
+| `/rollback [type] N` | Rollback to version N |
 
 ---
 
@@ -176,9 +228,17 @@ When an agent queries the RAG:
 | **storyteller** | project | All docs → techno-functional synthesis |
 | **presenter** | project | Synthesis → 10-slide deck plan |
 
-### Custom agents (no code needed)
+### Agent-specific commands
 
-Drop a Markdown file in `agents/defs/`:
+**Codex**: `/scan [path]`, `/inventory`, `/tree`
+**Developer**: `/apply` (git apply), `/diff`, `/diffs`, `/show <file>`, `/tree`
+**Documenter**: `/overview`, `/classes [module]`, `/sequence [flow]`, `/datamodel`, `/components`, `/reference [module]`
+
+---
+
+## Custom Agents
+
+Create a `.md` file in `agents/defs/` — no Python code needed:
 
 ```markdown
 # Agent: Reviewer
@@ -214,21 +274,33 @@ That's it. The agent appears in the CLI menu and web UI automatically. See [conf
 
 ---
 
-## Pipeline
+## Project Pipeline
 
-The project pipeline automates the full workflow from notes to implementation:
+The pipeline automates the full project workflow:
 
+```
+notes/ → portfolio → specifier → planner → storyteller → presenter → developer
+         (requirements) (specs)    (roadmap) (synthesis)    (deck)      (diffs)
+```
+
+### Using the pipeline
+
+**CLI**:
 ```bash
 # CLI
 python run.py --project my-feature --skip-ingest
-> /pipeline                      # Start from beginning
+> /pipeline                      # Start from the beginning
 > /pipeline from specifier       # Resume from a step
 > /pipeline status               # Show progress
 ```
 
-**Web** (at `/workspace`): select a project, click **▶ Pipeline**, follow the step-by-step flow.
+**Web** (at `/workspace`):
+1. Select or create a project
+2. Click **▶ Pipeline**
+3. At each step: chat with the agent, use `/load`, `/draft`
+4. Click **✅ Finalize** to advance, **⏭ Skip** to skip, **✖ Abort** to stop
 
-Each step produces versioned outputs (`requirements_v1.md`, `specifications_v2.md`, etc.). Use `/finalize` to advance, `/rollback N` to revert.
+Each step produces versioned outputs (`requirements_v1.md`, `specifications_v2.md`, etc.) in `projects/{name}/outputs/`. Use `/finalize` to advance, `/rollback N` to revert.
 
 ---
 
@@ -272,31 +344,58 @@ Documentation browser with three tabs: **Pyramid** (L0→L3 docs), **RAG Coverag
 
 ## Docker Deployment
 
-```bash
-cp .env.example .env             # Edit credentials
-./scripts/deploy.sh setup        # First-time setup
-docker compose up -d             # Start web + indexer
-```
+### Services
 
 | Container | Purpose |
 |---|---|
-| `agent-hub-web` | Web UI on port 8080 |
-| `agent-hub-indexer` | Periodic watch → synthesize → ingest |
+| `agent-hub-web` | Web UI (expert + workspace + docs) on port 8080 |
+| `agent-hub-indexer` | Periodic indexer (watch → synthesize → ingest) |
+
+### Setup
 
 ```bash
-./scripts/deploy.sh status       # Service status
+cp .env.example .env             # Edit credentials
+./scripts/deploy.sh setup        # First-time setup
+docker compose up -d             # Start services
+docker compose logs -f web       # Watch logs
+```
+
+### docker-compose.yml
+
+The web container mounts workspace, context, agents, and reports as read-only volumes. The indexer mounts context and reports as read-write (it generates docs).
+
+Both containers share the `.vectordb` volume so the indexer can update the RAG index that the web container reads.
+
+### Management
+
+```bash
+./scripts/deploy.sh update       # Pull latest + restart
+./scripts/deploy.sh status       # Service status + API stats
 ./scripts/deploy.sh logs         # Tail logs
-./scripts/deploy.sh update       # Pull + restart
+./scripts/deploy.sh restart      # Restart services
+./scripts/deploy.sh stop         # Stop services
+./scripts/deploy.sh reset-index  # Clear index and restart
 ```
 
 ---
 
 ## CI/CD (GitLab)
 
-The `.gitlab-ci.yml` builds a Docker image on push to `main` and optionally deploys via SSH.
+The `.gitlab-ci.yml` builds a Docker image and pushes to your registry on each push to `main`.
 
-Required CI/CD variables: `REGISTRY_URL`, `REGISTRY_USER`, `REGISTRY_PASSWORD`.
-Optional (auto-deploy): `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY_B64`, `DEPLOY_PATH`.
+### Required CI/CD Variables
+
+| Variable | Description |
+|---|---|
+| `REGISTRY_URL` | Docker registry URL |
+| `REGISTRY_USER` | Registry username |
+| `REGISTRY_PASSWORD` | Registry password |
+| `DEPLOY_HOST` | Target machine hostname (for auto-deploy) |
+| `DEPLOY_USER` | SSH user on target |
+| `DEPLOY_SSH_KEY_B64` | Base64-encoded SSH key |
+| `DEPLOY_PATH` | Path to the cloned repo on target |
+
+Deploy is manual (`when: manual` in the pipeline).
 
 ---
 
@@ -304,33 +403,71 @@ Optional (auto-deploy): `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY_B64`, `DEP
 
 ```
 agent-hub/
-├── .env.example              ← API credentials template
-├── config.yaml               ← Models, agents, RAG, domain
+├── .env.example              ← Secrets & environment template
+├── config.yaml               ← Models, agents, RAG, domain config
 ├── run.py                    ← CLI entry point
-├── synthesize.py             ← Doc pyramid builder
-├── watch.py                  ← Incremental change detection
-├── agents/defs/              ← Agent definitions (Markdown)
-├── context/                  ← RAG context
-│   ├── docs/                 ← Generated docs (codex + synthesis)
-│   └── changelog/            ← Time-travel entries
-├── projects/                 ← Project data (notes, outputs, reports)
-├── workspace/                ← Your codebase (symlink)
+├── synthesize.py             ← Hierarchical doc synthesis (L0/L1/L2/...)
+├── watch.py                  ← Incremental change detection + changelog
+├── Dockerfile                ← Docker image
+├── docker-compose.yml        ← Web + indexer services
+│
+├── agents/defs/              ← Agent definitions (core + custom, all Markdown)
+│   ├── expert.md ... presenter.md
+│   └── your-custom-agent.md
+│
+├── context/                  ← RAG context (global)
+│   ├── docs/                 ← Generated by codex (/scan)
+│   │   ├── codex_*.md        ← Per-file docs
+│   │   └── synthesis/        ← L0/L1/L2/...: doc pyramid
+│   ├── architecture/         ← Manual architecture notes
+│   ├── code-samples/         ← Manual code examples
+│   └── changelog/            ← Time-travel entries (YYYY-MM-DD.md)
+│
+├── projects/                 ← Project-scoped data
+│   └── {name}/
+│       ├── notes/            ← Raw input (meeting minutes, PDFs)
+│       ├── outputs/          ← Versioned outputs (requirements_v1.md, ...)
+│       └── reports/          ← Per-agent session reports
+│
+├── workspace/                ← Your codebase (symlink or copy)
+│
 ├── src/                      ← Python source
-│   ├── agents/               ← Agent implementations
-│   ├── rag/                  ← Ingestion + vector store
+│   ├── main.py               ← CLI app + chat loop
+│   ├── client.py             ← Resilient API client (retry + rerank)
+│   ├── config.py             ← .env + config.yaml loader
+│   ├── agent_defs.py         ← Markdown agent definition parser
+│   ├── projects.py           ← Project isolation + versioning
+│   ├── reports.py            ← Inter-agent report system
 │   ├── pipeline.py           ← Pipeline orchestrator
-│   └── changelog.py          ← Time-travel generator
-├── web/                      ← Web UI (FastAPI + HTML)
-└── scripts/                  ← Docker deployment helpers
+│   ├── changelog.py          ← Time-travel changelog generator
+│   ├── workspace_session.py  ← Web workspace session manager
+│   ├── agents/               ← Core agent implementations
+│   │   ├── base.py           ← BaseAgent (prompt, RAG, reports)
+│   │   ├── project_agent.py  ← ProjectAgent (versioning, /load)
+│   │   ├── codex.py          ← Codebase scanner
+│   │   ├── developer.py      ← Git diff generator
+│   │   ├── documenter.py     ← Architecture documentation
+│   │   ├── portfolio.py      ← Requirements from notes
+│   │   ├── specifier.py      ← Technical specifications
+│   │   ├── planner.py        ← Roadmap + tasks
+│   │   ├── storyteller.py    ← Techno-functional synthesis
+│   │   └── presenter.py      ← Slide deck planning
+│   └── rag/
+│       ├── ingest.py         ← Document parsing + chunking
+│       └── store.py          ← ChromaDB wrapper + hierarchical search
+│
+├── web/
+│   ├── server.py             ← FastAPI app (all routes)
+│   ├── workspace_routes.py   ← /workspace API routes
+│   ├── docs_routes.py        ← /docs API routes
+│   ├── index.html            ← Expert chat UI
+│   ├── workspace.html        ← 3-panel workspace UI
+│   └── docs.html             ← Documentation Hub UI
+│
+└── scripts/
+    ├── deploy.sh             ← Docker management helper
+    └── indexer-loop.sh       ← Indexer entrypoint (watch→synthesize→ingest)
 ```
-
----
-
-## Requirements
-
-- Python 3.12+
-- Any OpenAI-compatible LLM API
-- ChromaDB (installed via pip, no external server needed)
 
 ---
 

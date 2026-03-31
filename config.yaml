@@ -30,6 +30,7 @@ models:
 # Prompt content comes from agents/defs/{name}.md files.
 
 agents:
+  # Global agents
   expert:
     model: code
     temperature: 0.3
@@ -144,10 +145,10 @@ synthesis:
 # Helps agents understand your product context without hallucinating.
 
 domain:
-  sector: ""                           # e.g. fintech | healthtech | ecommerce
-  product_type: ""                     # e.g. "lending platform", "patient portal"
-  target_users: ""                     # e.g. "credit analysts, compliance officers"
-  description: ""                      # Free-form product description
+  sector: ""              # e.g. fintech | healthtech | greentech | ecommerce
+  product_type: ""        # e.g. "lending platform", "patient portal"
+  target_users: ""        # e.g. "credit analysts, compliance officers"
+  description: ""         # Free-form product description (optional)
   key_constraints: []
     # - "GDPR compliance required on all user data"
     # - "Audit trail mandatory for all financial decisions"

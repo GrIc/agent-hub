@@ -308,6 +308,10 @@ def main():
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logs")
     parser.add_argument("--config", "-c", default="config.yaml", help="Configuration file")
     parser.add_argument("--no-rag", action="store_true", help="Generate docs but do not update the RAG")
+    parser.add_argument("--bootstrap", action="store_true",
+                        help="Snapshot current workspace state without LLM or RAG update. "
+                            "Use after a manual prechauffe (codex + synthesize + ingest) "
+                            "to initialize watch state without re-processing all files.")
     args = parser.parse_args()
 
     level = logging.DEBUG if args.verbose else logging.INFO
@@ -334,6 +338,15 @@ def main():
             console.print("[yellow]State deleted. Next scan will process all files.[/yellow]")
         else:
             console.print("[dim]No state to delete.[/dim]")
+        sys.exit(0)
+
+    if args.bootstrap:
+        console.print(f"[bold blue]Bootstrapping state from workspace: {workspace}[/bold blue]")
+        current_state = scan_workspace(workspace)
+        console.print(f"   {len(current_state)} files found")
+        save_state(current_state)
+        console.print(f"[green]State bootstrapped ({len(current_state)} files). "
+                      f"Next watch cycle will only process real changes.[/green]")
         sys.exit(0)
 
     console.print(f"[bold blue]Scanning workspace: {workspace}[/bold blue]")
