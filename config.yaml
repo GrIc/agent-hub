@@ -61,13 +61,125 @@ agents:
     model: heavy
     temperature: 0.5
 
+# ── Scanning (watch.py + codex agent) ──────────────────────
+# Controls which files are picked up for documentation scanning.
+
+scanning:
+  max_file_size: 200000                # Bytes. Files larger than this are skipped (200KB)
+  skip_dirs:                           # Directories to ignore during workspace scan
+    - node_modules
+    - __pycache__
+    - .git
+    - .svn
+    - .hg
+    - dist
+    - build
+    - .next
+    - target
+    - .venv
+    - venv
+    - .idea
+    - .vscode
+    - vendor
+    - .vectordb
+  extensions:                          # File extensions eligible for documentation
+    - .py
+    - .java
+    - .js
+    - .ts
+    - .jsx
+    - .tsx
+    - .cs
+    - .sql
+    - .properties
+    - .xml
+    - .yaml
+    - .yml
+    - .json
+    - .html
+    - .css
+    - .scss
+    - .cpp
+    - .h
+    - .hpp
+    - .c
+    - .go
+    - .rb
+    - .php
+    - .sh
+    - .bash
+    - .zsh
+    - .bat
+    - .cmd
+    - .md
+    - .txt
+    - .rst
+    # Add your domain-specific extensions here:
+    # - .hql
+    # - .rql
+
 # ── RAG Configuration ──────────────────────────────────────
+# The RAG indexes files from context/, workspace/, and reports/ directories.
+# - extensions: positive list of file types to index (others are skipped)
+# - skip_dirs: directories to never traverse (node_modules, .git, etc.)
+# - chunk_size/overlap: how to split documents for semantic search
+#
 rag:
   chunk_size: 1500                     # Characters per chunk
   chunk_overlap: 200                   # Overlap between chunks
-  top_k: 8                            # Final results returned
-  rerank_top_k: 15                     # Candidates to retrieve before reranking
+  top_k: 8                             # Final results returned per query
+  rerank_top_k: 15                     # Candidates before reranking
   max_chunks: 100000                   # Max chunks in index
+  max_file_size: 1000000               # Bytes (1MB). Files larger are skipped.
+  extensions:                          # Only files with these extensions are indexed.
+                                       # If a file is not listed, it's skipped entirely.
+                                       # Keep this list focused on source/doc types.
+    - .py
+    - .js
+    - .ts
+    - .jsx
+    - .tsx
+    - .java
+    - .cs
+    - .go
+    - .rb
+    - .php
+    - .rs
+    - .cpp
+    - .c
+    - .h
+    - .sql
+    - .md
+    - .txt
+    - .json
+    - .yaml
+    - .yml
+    - .xml
+    - .html
+    - .css
+    - .scss
+    - .sh
+    - .properties
+  skip_dirs:                           # Directories to ignore during ingestion
+    - node_modules
+    - __pycache__
+    - .git
+    - .svn
+    - .hg
+    - dist
+    - build
+    - .next
+    - .nuxt
+    - target
+    - .venv
+    - venv
+    - env
+    - .env
+    - .vectordb
+    - .idea
+    - .vscode
+    - vendor
+    - bower_components
   extensions:                          # File types to index
     - .py
     - .js
@@ -129,8 +241,147 @@ scm:
 # Add custom blocks or override path_patterns here.
 
 synthesis:
-  blocks: {}
-  # Example:
+  condense_threshold: 8000             # chars: above this, condense doc before synthesis
+  condense_target: 6000                # target size after condensation
+  # Classification blocks: organize docs into architectural layers during synthesis.
+  #
+  # How it works:
+  # - Codex generates L3 docs (one per file) → classified into blocks below
+  # - Documents matched against path_patterns (substring match on filepath)
+  # - If a doc matches NONE of the patterns, it goes to 'other'
+  # - Synthesis then aggregates bottom-up:
+  #   * L3: individual file docs
+  #   * L2, L1, ..., LN: intermediate aggregations (depth depends on hierarchy)
+  #   * L0: single architecture overview (top level)
+  # - Level numbering is DYNAMIC: deep hierarchies may reach L11+ before L0
+  #
+  # Customize for your project:
+  # - Add new blocks (e.g., 'database', 'infra')
+  # - Edit path_patterns to match your directory structure
+  # - Override label/description for clarity
+  #
+  blocks:
+    tests:
+      label: "Tests"
+      description: "Unit tests, integration tests, test utilities"
+      path_patterns:
+        - /test/
+        - /tests/
+        - /__tests__/
+        - .test.
+        - .spec.
+        - _test.
+        - _spec.
+        - Test.java
+        - Spec.js
+        - test_
+        - tests_
+    database:
+      label: "Database"
+      description: "SQL scripts, schema definitions, migrations, data model, ORM"
+      path_patterns:
+        - .sql
+        - /migrations/
+        - /ddl/
+        - /schema/
+        - /models/
+        - /entities/
+        - /repositories/
+        - sql_
+        - _sql_
+        - migration_
+    frontend:
+      label: "Frontend"
+      description: "JavaScript, TypeScript, HTML, CSS, web components, UI"
+      path_patterns:
+        - /js/
+        - /ts/
+        - /css/
+        - /html/
+        - /webapp/
+        - /components/
+        - /views/
+        - /pages/
+        - /layouts/
+        - /static/
+        - /public/
+        - /assets/
+        - .js_
+        - .ts_
+        - .jsx_
+        - .tsx_
+        - .vue_
+        - .html_
+        - .css_
+        - .scss_
+    backend:
+      label: "Backend"
+      description: "Server-side code, business logic, API, services"
+      path_patterns:
+        - .java
+        - .py_
+        - .go_
+        - .rs_
+        - .rb_
+        - .php_
+        - /src/
+        - /lib/
+        - /pkg/
+        - /internal/
+        - /services/
+        - /controllers/
+        - /handlers/
+        - /api/
+        - /routes/
+        - /middleware/
+        - /com/
+        - /org/
+        - /net/
+    native:
+      label: "Native Apps"
+      description: "C/C++, Rust, Swift, Kotlin — desktop and mobile native code"
+      path_patterns:
+        - .cpp
+        - .cc
+        - .cxx
+        - .c++
+        - .hpp
+        - .hxx
+        - .swift
+        - .kt
+        - .kts
+        - /cpp/
+        - /swift/
+        - /kotlin/
+        - /jni/
+    infrastructure:
+      label: "Infrastructure"
+      description: "IaC, deployment, CI/CD, containerization, orchestration"
+      path_patterns:
+        - Dockerfile
+        - docker-compose
+        - .tf
+        - .tfvars
+        - .yaml
+        - .yml
+        - Jenkinsfile
+        - .gitlab-ci
+        - .github/workflows/
+        - .circleci/
+        - /terraform/
+        - /ansible/
+        - /kubernetes/
+        - /k8s/
+        - /helm/
+        - /scripts/
+        - /deploy/
+        - /infra/
+        - /devops/
+    other:
+      label: "Other"
+      description: "Configuration, scripts, infrastructure, documentation, misc"
+      path_patterns: []
+  # Example: add a custom block or override an existing one
   # blocks:
   #   infra:
   #     label: "Infrastructure"

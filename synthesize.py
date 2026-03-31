@@ -63,58 +63,6 @@ SYNTH_DIR = DOCS_DIR / "synthesis"
 # Block definitions
 # ---------------------------------------------------------------------------
 
-# ── Generic DEFAULT_BLOCKS for synthesize.py ──
-# Replace the DEFAULT_BLOCKS dict in synthesize.py with this.
-# These patterns are technology-agnostic and cover common project layouts.
-
-DEFAULT_BLOCKS = {
-    "tests": {
-        "label": "Tests",
-        "description": "Unit tests, integration tests, test utilities",
-        "path_patterns": [
-            "/test/", "/tests/", "/__tests__/",
-            ".test.", ".spec.", "_test.", "_spec.",
-            "Test.java", "Spec.js", "test_", "tests_",
-        ],
-    },
-    "database": {
-        "label": "Database",
-        "description": "SQL scripts, schema definitions, migrations, data model, ORM",
-        "path_patterns": [
-            ".sql", "/migrations/", "/ddl/", "/schema/",
-            "/models/", "/entities/", "/repositories/",
-            "sql_", "_sql_", "migration_",
-        ],
-    },
-    "frontend": {
-        "label": "Frontend",
-        "description": "JavaScript, TypeScript, HTML, CSS, web components, UI",
-        "path_patterns": [
-            "/js/", "/ts/", "/css/", "/html/", "/webapp/",
-            "/components/", "/views/", "/pages/", "/layouts/",
-            "/static/", "/public/", "/assets/",
-            ".js_", ".ts_", ".jsx_", ".tsx_", ".vue_",
-            ".html_", ".css_", ".scss_",
-        ],
-    },
-    "backend": {
-        "label": "Backend",
-        "description": "Server-side code, business logic, API, services",
-        "path_patterns": [
-            ".java", ".py_", ".go_", ".rs_", ".rb_", ".php_",
-            "/src/", "/lib/", "/pkg/", "/internal/",
-            "/services/", "/controllers/", "/handlers/",
-            "/api/", "/routes/", "/middleware/",
-            "/com/", "/org/", "/net/",
-        ],
-    },
-    "other": {
-        "label": "Other",
-        "description": "Configuration, scripts, infrastructure, documentation, misc",
-        "path_patterns": [],  # catch-all
-    },
-}
-
 
 # ---------------------------------------------------------------------------
 # Classification
@@ -370,6 +318,16 @@ Layer overviews:
 # Condense oversized docs before feeding them into a higher synthesis level
 CONDENSE_THRESHOLD = 8_000   # chars: above this, condense before passing to LLM
 CONDENSE_TARGET    = 6_000   # target size after condensation
+
+
+def _apply_config(cfg: dict) -> None:
+    """Override synthesis constants from config.yaml [synthesis] section."""
+    global CONDENSE_THRESHOLD, CONDENSE_TARGET
+    synth = cfg.get("synthesis", {})
+    if synth.get("condense_threshold") is not None:
+        CONDENSE_THRESHOLD = synth["condense_threshold"]
+    if synth.get("condense_target") is not None:
+        CONDENSE_TARGET = synth["condense_target"]
 
 CONDENSE_PROMPT = """\
 You are a technical documentation editor.
@@ -902,19 +860,11 @@ class Synthesizer:
 # ---------------------------------------------------------------------------
 
 def load_blocks(cfg: dict) -> dict:
-    custom = cfg.get("synthesis", {}).get("blocks", {})
-    blocks = dict(DEFAULT_BLOCKS)
-    for name, bdef in custom.items():
-        if name in blocks:
-            blocks[name]["path_patterns"] = bdef.get(
-                "path_patterns", blocks[name]["path_patterns"]
-            )
-            if "label" in bdef:
-                blocks[name]["label"] = bdef["label"]
-            if "description" in bdef:
-                blocks[name]["description"] = bdef["description"]
-        else:
-            blocks[name] = bdef
+    blocks = {
+        name: dict(bdef)
+        for name, bdef in cfg.get("synthesis", {}).get("blocks", {}).items()
+    }
+    # Ensure "other" is always last (catch-all)
     if "other" in blocks:
         other = blocks.pop("other")
         blocks["other"] = other
@@ -1009,6 +959,7 @@ def main():
 
     from src.config import load_config
     cfg    = load_config(args.config)
+    _apply_config(cfg)
     blocks = load_blocks(cfg)
 
     console.print("[bold blue]Classifying codex docs...[/bold blue]")

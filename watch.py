@@ -38,6 +38,8 @@ except ImportError:
 STATE_FILE = Path("output/.scan_state.json")
 CONTEXT_DOCS_DIR = Path("context/docs")
 
+# Fallback defaults — overridden at startup by config.yaml [scanning] via _apply_config().
+# Edit config.yaml, not here.
 CODE_EXTENSIONS = {
     ".py", ".java", ".js", ".ts", ".jsx", ".tsx", ".cs",
     ".sql", ".properties",
@@ -54,6 +56,18 @@ SKIP_DIRS = {
 }
 
 MAX_FILE_SIZE = 200_000  # 200KB
+
+
+def _apply_config(cfg: dict) -> None:
+    """Override module-level scanning constants from config.yaml [scanning] section."""
+    global CODE_EXTENSIONS, SKIP_DIRS, MAX_FILE_SIZE
+    sc = cfg.get("scanning", {})
+    if sc.get("extensions"):
+        CODE_EXTENSIONS = set(sc["extensions"])
+    if sc.get("skip_dirs"):
+        SKIP_DIRS = set(sc["skip_dirs"])
+    if sc.get("max_file_size") is not None:
+        MAX_FILE_SIZE = sc["max_file_size"]
 
 
 # -- State management ---
@@ -325,6 +339,7 @@ def main():
 
     from src.config import load_config
     cfg = load_config(args.config)
+    _apply_config(cfg)
     defaults = cfg.get("_defaults", {})
     workspace = Path(defaults.get("workspace_path", "./workspace")).resolve()
 

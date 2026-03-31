@@ -23,19 +23,6 @@ logger = logging.getLogger(__name__)
 
 # -- Binary / asset extensions to SKIP ---
 
-BINARY_EXTENSIONS = {
-    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".svg", ".webp", ".tiff", ".tif",
-    ".ttf", ".otf", ".woff", ".woff2", ".eot",
-    ".pyc", ".pyo", ".class", ".o", ".so", ".dll", ".exe", ".bin", ".dat",
-    ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar", ".jar", ".war", ".ear",
-    ".mp3", ".mp4", ".avi", ".mov", ".wav", ".flac", ".ogg", ".mkv", ".webm",
-    ".ppt", ".xls", ".doc",
-    ".db", ".sqlite", ".sqlite3", ".pkl", ".pickle", ".npy", ".npz",
-    ".parquet", ".feather", ".h5", ".hdf5",
-    ".map", ".min.js", ".min.css", ".bundle.js", ".chunk.js",
-    ".lock",
-}
-
 SKIP_DIRS = {
     "node_modules", "__pycache__", ".git", ".svn", ".hg",
     "dist", "build", ".next", ".nuxt", "target",
@@ -43,6 +30,8 @@ SKIP_DIRS = {
     ".vectordb", ".idea", ".vscode",
     "vendor", "bower_components",
 }
+
+MAX_FILE_SIZE = 1_000_000  # 1MB
 
 
 # -- Parsers ---
@@ -194,23 +183,34 @@ def chunk_text(
 
 # -- Ingestion pipeline ---
 
-def _should_skip_dir(dirname: str) -> bool:
-    return dirname in SKIP_DIRS or dirname.startswith(".")
+def _should_skip_dir(dirname: str, skip_dirs: set[str] = SKIP_DIRS) -> bool:
+    return dirname in skip_dirs or dirname.startswith(".")
 
 
-def _should_skip_file(path: Path, allowed_extensions: set[str]) -> bool:
+def _should_skip_file(path: Path, allowed_extensions: set[str], max_file_size: int = MAX_FILE_SIZE) -> bool:
+    """Skip files that don't match our criteria.
+
+    - Must be in allowed_extensions (if specified)
+    - Must not exceed max_file_size
+    - Minified files are always skipped
+    """
     suffix = path.suffix.lower()
-    if suffix in BINARY_EXTENSIONS:
+
+    # Skip minified files (always)
+    if path.name.endswith((".min.js", ".min.css", ".bundle.js", ".chunk.js")):
         return True
+
+    # Skip by size
     try:
-        if path.stat().st_size > 1_000_000:
+        if path.stat().st_size > max_file_size:
             return True
     except OSError:
         return True
-    if path.name.endswith((".min.js", ".min.css", ".bundle.js")):
-        return True
+
+    # Positive list: only index if extension is in allowed_extensions
     if allowed_extensions and suffix not in allowed_extensions:
         return True
+
     return False
 
 
@@ -220,6 +220,8 @@ def ingest_directory(
     chunk_size: int = 1500,
     chunk_overlap: int = 200,
     label: str = "",
+    skip_dirs: Optional[set[str]] = None,
+    max_file_size: Optional[int] = None,
 ) -> list[dict]:
     """
     Recursively read all matching files, parse, and chunk.
@@ -239,21 +241,23 @@ def ingest_directory(
         logger.warning(f"Directory {directory} does not exist")
         return []
 
+    _skip_dirs = skip_dirs if skip_dirs is not None else SKIP_DIRS
+    _max_file_size = max_file_size if max_file_size is not None else MAX_FILE_SIZE
     allowed = set(extensions) if extensions else set()
     all_chunks = []
     skipped = 0
 
     all_paths = []
     for dirpath, dirnames, filenames in os.walk(directory, followlinks=True):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+        dirnames[:] = [d for d in dirnames if d not in _skip_dirs and not d.startswith(".")]
         for fname in filenames:
             all_paths.append(Path(dirpath) / fname)
     for path in sorted(all_paths):
         if not path.is_file():
             continue
-        if any(_should_skip_dir(part) for part in path.relative_to(directory).parts[:-1]):
+        if any(_should_skip_dir(part, _skip_dirs) for part in path.relative_to(directory).parts[:-1]):
             continue
-        if _should_skip_file(path, allowed):
+        if _should_skip_file(path, allowed, _max_file_size):
             skipped += 1
             continue
 

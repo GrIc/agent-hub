@@ -119,6 +119,8 @@ def run_ingestion(cfg: dict, client: ResilientClient, store: VectorStore) -> int
     chunk_size = rag_cfg.get("chunk_size", 1000)
     chunk_overlap = rag_cfg.get("chunk_overlap", 150)
     max_chunks = rag_cfg.get("max_chunks", 2000)
+    skip_dirs = set(rag_cfg["skip_dirs"]) if rag_cfg.get("skip_dirs") else None
+    max_file_size = rag_cfg.get("max_file_size")
 
     chunks = []
     for label, path in [
@@ -128,7 +130,7 @@ def run_ingestion(cfg: dict, client: ResilientClient, store: VectorStore) -> int
     ]:
         if path.exists():
             ext = [".md"] if label == "reports" else extensions
-            chunks.extend(ingest_directory(path, extensions=ext, chunk_size=chunk_size, chunk_overlap=chunk_overlap, label=label))
+            chunks.extend(ingest_directory(path, extensions=ext, chunk_size=chunk_size, chunk_overlap=chunk_overlap, label=label, skip_dirs=skip_dirs, max_file_size=max_file_size))
 
     if not chunks:
         console.print("[yellow]No documents found.[/yellow]")
@@ -273,6 +275,8 @@ def create_agent(name: str, cfg: dict, client: ResilientClient, store: VectorSto
         kwargs["workspace_path"] = cfg.get("_defaults", {}).get("workspace_path", "./workspace")
     if name == "developer":
         kwargs["scm_config"] = cfg.get("scm", {})
+    if name == "codex":
+        kwargs["scan_config"] = cfg.get("scanning", {})
 
     return agent_class(**kwargs)
 

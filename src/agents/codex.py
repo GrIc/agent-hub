@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 CONTEXT_DOCS_DIR = Path("context/docs")
 OUTPUT_DIR = Path("output")
 
-# Code extensions to scan (not binaries, not assets)
+# Fallback defaults — overridden at instantiation by config.yaml [scanning] via scan_config.
+# Edit config.yaml, not here.
 CODE_EXTENSIONS = {
     ".py", ".java", ".js", ".ts", ".jsx", ".tsx", ".cs",
     ".sql", ".properties",
@@ -33,8 +34,7 @@ CODE_EXTENSIONS = {
     ".md", ".txt", ".rst",
 }
 
-# Max file size to read (200KB)
-MAX_FILE_SIZE = 200_000
+MAX_FILE_SIZE = 200_000  # 200KB
 
 # Max chars to send in a single LLM call (~8K tokens, safe for 32K context models)
 MAX_CHUNK_FOR_LLM = 24_000
@@ -67,9 +67,16 @@ class CodexAgent(BaseAgent):
         # FIX: pop custom_dsl_ext BEFORE calling super().__init__() to avoid
         # passing an unexpected keyword argument to BaseAgent.__init__().
         dsl_ext = kwargs.pop("custom_dsl_ext", None)
+        scan_cfg = kwargs.pop("scan_config", {})
         super().__init__(*args, **kwargs)
         self.workspace = Path(workspace_path).resolve()
 
+        if scan_cfg.get("extensions"):
+            CODE_EXTENSIONS.clear()
+            CODE_EXTENSIONS.update(scan_cfg["extensions"])
+        if scan_cfg.get("max_file_size") is not None:
+            global MAX_FILE_SIZE
+            MAX_FILE_SIZE = scan_cfg["max_file_size"]
         if dsl_ext and dsl_ext not in CODE_EXTENSIONS:
             CODE_EXTENSIONS.add(dsl_ext)
 
