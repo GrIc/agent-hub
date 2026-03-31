@@ -10,7 +10,7 @@ from typing import Optional
 from src.client import ResilientClient
 from src.rag.store import VectorStore
 from src.agent_defs import load_agent_definition
-from src.reports import save_report, load_peer_reports, list_reports, delete_last_report
+from src.reports import save_report, load_peer_reports, list_reports
 
 logger = logging.getLogger(__name__)
 

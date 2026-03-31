@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse
 import uvicorn
 
 import sys
@@ -30,7 +30,7 @@ try:
 except ImportError:
     pass
 
-from src.config import load_config, get_model_for_agent, get_agent_temperature, build_custom_dsl_context, build_domain_context, get_model_for_agent, get_agent_temperature
+from src.config import load_config, get_model_for_agent, get_agent_temperature, build_custom_dsl_context, build_domain_context
 from src.client import ResilientClient
 from src.rag.store import VectorStore
 from src.agent_defs import load_agent_definition, discover_custom_agents

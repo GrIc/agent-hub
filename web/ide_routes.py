@@ -10,8 +10,6 @@ Plugged into the main FastAPI app via `register_ide_routes(app, cfg)`.
 """
 
 import logging
-from pathlib import Path
-from typing import Optional
 
 from fastapi import Request
 from fastapi.responses import JSONResponse

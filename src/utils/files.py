@@ -1,6 +1,5 @@
 """Utility functions for file operations."""
 
-import os
 import stat
 from pathlib import Path
 

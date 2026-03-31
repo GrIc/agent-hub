@@ -35,7 +35,6 @@ import logging
 import re
 import sys
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +74,11 @@ class AgentHubBridge:
             build_custom_dsl_context,
             build_domain_context,
         )
-        from src.agent_defs import load_agent_definition
+
+        # Store for use in lazy-init methods
+        self._get_model_for_agent = get_model_for_agent
+        self._get_agent_temperature = get_agent_temperature
+        self._get_agent_extra_params = get_agent_extra_params
 
         self.cfg = cfg
         defaults = cfg.get("_defaults", {})
@@ -109,7 +112,6 @@ class AgentHubBridge:
         """Lazy-init the expert agent."""
         if self._expert is None:
             from src.agents.base import BaseAgent
-            from src.config import get_model_for_agent, get_agent_temperature, get_agent_extra_params
 
             class ExpertMCP(BaseAgent):
                 name = "expert"
@@ -117,12 +119,12 @@ class AgentHubBridge:
             self._expert = ExpertMCP(
                 client=self.client,
                 store=self.store,
-                model=get_model_for_agent(self.cfg, "expert"),
-                temperature=get_agent_temperature(self.cfg, "expert"),
+                model=self._get_model_for_agent(self.cfg, "expert"),
+                temperature=self._get_agent_temperature(self.cfg, "expert"),
                 rag_top_k=self.cfg.get("rag", {}).get("top_k", 8),
                 custom_dsl_info=self.dsl_context,
                 domain_info=self.domain_context,
-                extra_params=get_agent_extra_params(self.cfg, "expert"),
+                extra_params=self._get_agent_extra_params(self.cfg, "expert"),
             )
         return self._expert
 
@@ -130,17 +132,16 @@ class AgentHubBridge:
         """Lazy-init the developer agent."""
         if self._developer is None:
             from src.agents.developer import DeveloperAgent
-            from src.config import get_model_for_agent, get_agent_temperature, get_agent_extra_params
 
             self._developer = DeveloperAgent(
                 client=self.client,
                 store=self.store,
-                model=get_model_for_agent(self.cfg, "developer"),
-                temperature=get_agent_temperature(self.cfg, "developer"),
+                model=self._get_model_for_agent(self.cfg, "developer"),
+                temperature=self._get_agent_temperature(self.cfg, "developer"),
                 rag_top_k=self.cfg.get("rag", {}).get("top_k", 8),
                 custom_dsl_info=self.dsl_context,
                 domain_info=self.domain_context,
-                extra_params=get_agent_extra_params(self.cfg, "developer"),
+                extra_params=self._get_agent_extra_params(self.cfg, "developer"),
                 workspace_path=str(self.workspace),
             )
         return self._developer
@@ -202,7 +203,6 @@ class AgentHubBridge:
 
     def list_deliverables(self, project: str) -> list[dict]:
         """List all pipeline deliverables for a project."""
-        from src.projects import get_or_create_project
         project_dir = Path("projects") / project / "outputs"
         if not project_dir.exists():
             return []
@@ -465,8 +465,7 @@ def create_mcp_server(cfg: dict):
     from mcp.types import (
         Tool,
         TextContent,
-        Resource,
-        ResourceTemplate,
+        Resource
     )
 
     bridge = AgentHubBridge(cfg)

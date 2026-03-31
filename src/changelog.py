@@ -14,6 +14,7 @@ The changelog is:
 """
 
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -232,7 +233,6 @@ def list_changelog_entries(limit: int = 30) -> list[dict]:
             content = f.read_text(encoding="utf-8", errors="replace")
             first_line = content.strip().split("\n")[0].lstrip("# ").strip()
             # Count entries in the file (## headers)
-            import re
             entry_count = len(re.findall(r"^## ", content, re.MULTILINE))
             entries.append({
                 "date": f.stem,
