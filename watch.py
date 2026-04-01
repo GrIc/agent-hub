@@ -474,6 +474,50 @@ def main():
             console.print(f"[red]RAG error: {e}[/red]")
             logging.exception("RAG update failed")
 
+    # -- Graph incremental update --
+    graph_cfg = cfg.get("graph", {})
+    if graph_cfg.get("enabled", False) and not args.no_rag and all_changed:
+        console.print(f"\n[bold blue]Updating knowledge graph...[/bold blue]")
+        try:
+            from src.rag.graph import KnowledgeGraph
+            from src.rag.graph_extract import TripletExtractor
+
+            graph = KnowledgeGraph(persist_dir=graph_cfg.get("persist_dir", ".graphdb"))
+            extractor = TripletExtractor(
+                client=client,
+                model=get_model_for_agent(cfg, "graph"),
+                temperature=graph_cfg.get("extraction_temperature", 0.1),
+            )
+
+            docs_dir = Path("context/docs")
+            updated = 0
+            for filepath in all_changed:
+                safe = filepath.replace("/", "_").replace("\\", "_").replace(".", "_")
+                doc_path = docs_dir / f"codex_{safe}.md"
+                if not doc_path.exists():
+                    continue
+
+                source = str(doc_path)
+                graph.remove_nodes_by_source(source)
+
+                text = doc_path.read_text(encoding="utf-8", errors="replace")
+                if len(text.strip()) < 50:
+                    continue
+
+                nodes, edges = extractor.extract_from_doc(text, source, "L3")
+                for node in nodes:
+                    graph.add_node(**node)
+                for edge in edges:
+                    graph.add_edge(**edge)
+                updated += 1
+                time.sleep(1)
+
+            graph.save()
+            console.print(f"[green]Graph updated: {updated} doc(s) re-processed.[/green]")
+        except Exception as e:
+            console.print(f"[red]Graph update error: {e}[/red]")
+            logging.exception("Graph update failed")
+
     # Generate Time-Travel changelog entry
     if HAS_CHANGELOG and not args.dry_run and total_changes > 0:
         try:

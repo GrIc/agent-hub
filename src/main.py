@@ -393,6 +393,7 @@ def main():
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logs")
     parser.add_argument("--config", "-c", default="config.yaml", help="Configuration file")
     parser.add_argument("--clear-index", action="store_true", help="Delete index and re-index")
+    parser.add_argument("--build-graph", action="store_true", help="Build knowledge graph and quit")
     parser.add_argument("--clean", action="store_true", help="Clean: delete index, outputs")
     args = parser.parse_args()
 
@@ -400,7 +401,7 @@ def main():
 
     if args.clean:
         import shutil
-        for d in [".vectordb", "output"]:
+        for d in [".vectordb", ".graphdb", "output"]:
             p = Path(d)
             if p.exists():
                 shutil.rmtree(p)
@@ -453,6 +454,24 @@ def main():
     if args.clear_index:
         store.clear()
         console.print("[yellow]Index cleared.[/yellow]")
+
+    # -- Knowledge Graph (optional) --
+    graph_cfg = cfg.get("graph", {})
+    if graph_cfg.get("enabled", False) or args.build_graph:
+        from src.rag.graph import KnowledgeGraph
+        persist_dir = graph_cfg.get("persist_dir", ".graphdb")
+        graph = KnowledgeGraph(persist_dir=persist_dir)
+        store.graph = graph
+        logging.getLogger(__name__).info(
+            f"KnowledgeGraph loaded: {graph.node_count} nodes, {graph.edge_count} edges"
+        )
+
+    if args.build_graph:
+        import subprocess
+        cmd = [sys.executable, "build_graph.py", "--config", args.config]
+        console.print("[bold]Building knowledge graph...[/bold]")
+        result = subprocess.run(cmd)
+        sys.exit(result.returncode)
 
     if not args.skip_ingest:
         try:

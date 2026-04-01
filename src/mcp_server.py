@@ -100,6 +100,12 @@ class AgentHubBridge:
             embed_model=embed_model,
             rerank_model=rerank_model,
         )
+        
+        graph_cfg = cfg.get("graph", {})
+        if graph_cfg.get("enabled", False):
+            from src.rag.graph import KnowledgeGraph
+            persist_dir = graph_cfg.get("persist_dir", ".graphdb")
+            self.store.graph = KnowledgeGraph(persist_dir=persist_dir)
 
         self.dsl_context = build_custom_dsl_context(cfg)
         self.domain_context = build_domain_context(cfg)
@@ -156,7 +162,7 @@ class AgentHubBridge:
 
     def search_rag(self, query: str, top_k: int = 8) -> list[dict]:
         """Direct RAG search, returns raw chunks with scores."""
-        results = self.store.search_hierarchical(query, top_k=top_k)
+        results = self.store.search_hybrid(query, top_k=top_k)
         return [
             {
                 "text": r["text"],
@@ -166,6 +172,41 @@ class AgentHubBridge:
             }
             for r in results
         ]
+
+    def search_graph(self, entity: str, max_hops: int = 2) -> dict:
+        """Query the knowledge graph for entity relationships."""
+        graph_cfg = self.cfg.get("graph", {})
+        if not graph_cfg.get("enabled", False):
+            return {"error": "Knowledge graph is not enabled. Set graph.enabled: true in config.yaml"}
+
+        from src.rag.graph import KnowledgeGraph
+        persist_dir = graph_cfg.get("persist_dir", ".graphdb")
+        graph = KnowledgeGraph(persist_dir=persist_dir)
+
+        if graph.node_count == 0:
+            return {"error": "Knowledge graph is empty. Run: python build_graph.py"}
+
+        # Find matching entities
+        matches = graph.find_entities(entity, threshold=0.6)
+        if not matches:
+            return {"entity": entity, "matches": [], "message": "No matching entities found"}
+
+        # BFS from top matches
+        all_neighbors = {}
+        for node_id, confidence in matches[:3]:
+            neighbors = graph.get_neighbors(node_id, max_hops=max_hops)
+            for nid, hop in neighbors.items():
+                if nid not in all_neighbors or hop < all_neighbors[nid]:
+                    all_neighbors[nid] = hop
+
+        summary = graph.get_subgraph_summary(all_neighbors)
+        return {
+            "entity": entity,
+            "matches": [{"id": m[0], "confidence": round(m[1], 3)} for m in matches[:5]],
+            "neighbor_count": len(all_neighbors),
+            "summary": summary,
+            "stats": graph.stats(),
+        }
 
     def read_file(self, filepath: str) -> dict:
         """Read a file from the workspace."""
@@ -519,6 +560,30 @@ def create_mcp_server(cfg: dict):
                 },
             ),
             Tool(
+                name="search_graph",
+                description=(
+                    "Query the knowledge graph for entity relationships and dependencies. "
+                    "Use this for structural questions: 'What depends on X?', 'What is the "
+                    "impact of modifying Y?', 'What does Z call?'. Returns a relationship "
+                    "summary and neighboring entities."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "entity": {
+                            "type": "string",
+                            "description": "Entity name to search for (class, module, service, etc.)",
+                        },
+                        "max_hops": {
+                            "type": "integer",
+                            "description": "BFS traversal depth (default: 2)",
+                            "default": 2,
+                        },
+                    },
+                    "required": ["entity"],
+                },
+            ),
+            Tool(
                 name="read_file",
                 description=(
                     "Read a file from the workspace (the codebase indexed by Agent Hub). "
@@ -647,7 +712,16 @@ def create_mcp_server(cfg: dict):
                     type="text",
                     text=json.dumps(results, indent=2, ensure_ascii=False),
                 )]
-
+            elif name == "search_graph":
+                result = await asyncio.to_thread(
+                    bridge.search_graph,
+                    arguments["entity"],
+                    arguments.get("max_hops", 2),
+                )
+                return [TextContent(
+                    type="text",
+                    text=json.dumps(result, indent=2, ensure_ascii=False),
+                )]
             elif name == "read_file":
                 result = await asyncio.to_thread(
                     bridge.read_file, arguments["filepath"]

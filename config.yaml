@@ -118,6 +118,20 @@ scanning:
     # - .hql
     # - .rql
 
+# ── Knowledge Graph (GraphRAG) ─────────────────────────────
+# Structural layer complementing the vector store.
+# Extracts {entity, relation, entity} triplets from documentation and
+# stores them in a NetworkX graph (.graphdb/) for dependency / impact queries.
+# If enabled, hybrid search boosts vector results that match graph neighbors.
+
+graph:
+  enabled: false                       # Opt-in. Set true to activate GraphRAG.
+  persist_dir: ".graphdb"              # Directory for graph JSON files
+  max_hops: 2                          # BFS depth for graph traversal
+  graph_boost: 0.3                     # Score multiplier for graph-matched results
+  extraction_model: heavy              # Model alias for triplet extraction
+  extraction_temperature: 0.1          # Low temperature for factual extraction
+
 # ── RAG Configuration ──────────────────────────────────────
 # The RAG indexes files from context/, workspace/, and reports/ directories.
 # - extensions: positive list of file types to index (others are skipped)

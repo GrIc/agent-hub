@@ -83,28 +83,43 @@ class BaseAgent:
 
     def retrieve_context(self, query: str) -> str:
         """
-        Search the vector store using hierarchical two-pass retrieval:
-          1. Synthesis docs (L0, L1, L2) for architectural context
-          2. Detailed docs (L3, code) for implementation specifics
+        Hybrid retrieval: vector search + knowledge graph traversal.
 
-        Falls back to flat search on older indexes without doc_level metadata.
+        Uses search_hybrid() which combines:
+          1. Hierarchical vector search (synthesis + detail docs)
+          2. Graph traversal for structural context (if graph is available)
+
+        Falls back to search_hierarchical() if no graph is attached.
         """
-        results = self.store.search_hierarchical(query, top_k=self.rag_top_k)
+        results = self.store.search_hybrid(query, top_k=self.rag_top_k)
         if not results:
             return ""
 
         context_parts = []
+        graph_context = None
+
         for i, r in enumerate(results, 1):
             source = r["source"]
             score = r["score"]
             text = r["text"]
             level = r.get("doc_level", "")
             level_tag = f" [{level}]" if level else ""
+            boosted = " +graph" if r.get("graph_boosted") else ""
             context_parts.append(
-                f"--- [Source {i}: {source}{level_tag} (score: {score:.2f})] ---\n{text}"
+                f"--- [Source {i}: {source}{level_tag} (score: {score:.2f}{boosted})] ---\n{text}"
+            )
+            if r.get("graph_context"):
+                graph_context = r["graph_context"]
+
+        context = "\n\n".join(context_parts)
+
+        if graph_context:
+            context += (
+                "\n\n--- [Structural Context (Knowledge Graph)] ---\n"
+                + graph_context
             )
 
-        return "\n\n".join(context_parts)
+        return context
 
     def get_peer_reports(self) -> str:
         """Load recent CRs from linked agents."""

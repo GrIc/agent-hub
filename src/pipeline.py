@@ -16,7 +16,6 @@ Pipeline steps:
 """
 
 import logging
-from typing import Optional
 
 from rich.console import Console
 from rich.panel import Panel
@@ -137,7 +136,7 @@ class AgentMessenger:
             f"\n[bold magenta]  [{from_agent} → User][/bold magenta] {question}"
         )
         try:
-            answer = Prompt.ask(f"[bold cyan]  Your answer[/bold cyan]")
+            answer = Prompt.ask("[bold cyan]  Your answer[/bold cyan]")
             self.exchange_log.append({
                 "from": "user",
                 "to": from_agent,
@@ -183,7 +182,7 @@ def run_pipeline(
         agent_factory: Function(name, cfg, client, store, project) -> agent
         start_from: Agent name to start from (empty = from beginning)
     """
-    messenger = AgentMessenger(agent_factory, cfg, client, store, project)
+    AgentMessenger(agent_factory, cfg, client, store, project)
 
     # Determine starting step
     start_idx = 0

@@ -169,12 +169,20 @@ def chunk_text(
                 end = start + last_nl + 1
                 chunk = text[start:end]
 
-        chunks.append({
-            "text": chunk.strip(),
-            "source": source,
-            "chunk_index": idx,
-            "doc_level": doc_level,
-        })
+        #chunks.append({
+        #    "text": chunk.strip(),
+        #    "source": source,
+        #    "chunk_index": idx,
+        #    "doc_level": doc_level,
+        #})
+        stripped_chunk = chunk.strip()
+        if stripped_chunk:
+            chunks.append({
+                "text": stripped_chunk,
+                "source": source,
+                "chunk_index": idx,
+                "doc_level": doc_level,
+            })
         start = end - overlap
         idx += 1
 

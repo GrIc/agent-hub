@@ -52,6 +52,7 @@ class VectorStore:
         self.llm_client = client
         self.embed_model = embed_model or ""
         self.rerank_model = rerank_model or ""
+        self.graph = None  # Optional KnowledgeGraph, set externally
 
         self.db = chromadb.PersistentClient(path=persist_dir)
         self.collection = self.db.get_or_create_collection(
@@ -306,6 +307,26 @@ class VectorStore:
             reverse=True,
         )
         return merged[:top_k]
+
+    def search_hybrid(self, query: str, top_k: int = 8, **kwargs) -> list[dict]:
+        """Hybrid search: vector + knowledge graph.
+
+        If a KnowledgeGraph is attached (self.graph), combines vector results
+        with graph traversal for structural context. Otherwise falls back to
+        search_hierarchical().
+        """
+        if self.graph is None or self.graph.node_count == 0:
+            return self.search_hierarchical(query, top_k=top_k)
+
+        from src.rag.graph_search import HybridSearcher
+
+        searcher = HybridSearcher(
+            store=self,
+            graph=self.graph,
+            max_hops=kwargs.get("max_hops", 2),
+            graph_boost=kwargs.get("graph_boost", 0.3),
+        )
+        return searcher.search(query, top_k=top_k)
 
     def clear(self):
         name = self.collection.name
