@@ -132,6 +132,13 @@ def create_app(cfg: dict) -> FastAPI:
     embed_model = cfg["models"].get("embed", "")
     rerank_model = cfg["models"].get("rerank", "")
     store = VectorStore(client=client, embed_model=embed_model, rerank_model=rerank_model)
+    graph_cfg = cfg.get("graph", {})
+    if graph_cfg.get("enabled", False):
+        from src.rag.graph import KnowledgeGraph
+        persist_dir = graph_cfg.get("persist_dir", ".graphdb")
+        graph = KnowledgeGraph(persist_dir=persist_dir)
+        store.graph = graph
+        logger.info(f"KnowledgeGraph loaded : {graph.node_count} nodes, {graph.edge_count} edges")
 
     dsl_context = build_custom_dsl_context(cfg)
     domain_context = build_domain_context(cfg)

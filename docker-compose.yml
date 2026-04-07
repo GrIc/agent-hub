@@ -16,6 +16,7 @@ services:
       - .env
     volumes:
       - ${HOST_VECTORDB_PATH:-./.vectordb}:/app/.vectordb
+      - ${HOST_GRAPHDB_PATH:-./.graphdb}:/app/.graphdb
       - ${HOST_WORKSPACE_PATH:-./workspace}:/app/workspace:ro
       - ${HOST_CONTEXT_PATH:-./context}:/app/context:ro
       - ${HOST_PROJECTS_PATH:-./projects}:/app/projects
