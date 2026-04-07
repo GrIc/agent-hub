@@ -40,7 +40,8 @@ from src.agents.storyteller import StorytellerAgent
 
 # Base classes for custom agents
 from src.agents.base import BaseAgent
-from src.pipeline import run_pipeline, show_pipeline_status, PIPELINE_STEPS
+from src.pipeline import run_pipeline, show_pipeline_status
+from src.pipeline_loader import discover_pipelines
 from src.agents.project_agent import ProjectAgent
 
 console = Console()
@@ -355,14 +356,46 @@ def chat_loop(agent, cfg, client, store, project_name=None):
                 continue
             parts = cmd.split()
             project = get_or_create_project(project_name)
+
+            # Load available pipelines
+            pipelines = discover_pipelines()
+            if not pipelines:
+                console.print("[red]No pipeline definitions found in agents/pipelines/[/red]")
+                continue
+
+            # Select pipeline
+            if len(pipelines) == 1:
+                pipeline_def = next(iter(pipelines.values()))
+            else:
+                console.print("\n[bold]Available pipelines:[/bold]")
+                pipeline_list = list(pipelines.values())
+                for idx, pdef in enumerate(pipeline_list, 1):
+                    console.print(f"  {idx}. {pdef.icon} {pdef.name} — {pdef.description}")
+                try:
+                    choice = Prompt.ask("\n[bold]Select pipeline[/bold] (number or id)", default="1")
+                    if choice.isdigit():
+                        idx = int(choice) - 1
+                        if 0 <= idx < len(pipeline_list):
+                            pipeline_def = pipeline_list[idx]
+                        else:
+                            console.print("[red]Invalid number.[/red]")
+                            continue
+                    else:
+                        pipeline_def = pipelines.get(choice)
+                        if pipeline_def is None:
+                            console.print(f"[red]Unknown pipeline: {choice}[/red]")
+                            continue
+                except (KeyboardInterrupt, EOFError):
+                    continue
+
             if len(parts) > 1 and parts[1] == "status":
-                show_pipeline_status(project)
+                show_pipeline_status(project, pipeline_def)
                 continue
             start_from = ""
             if len(parts) > 2 and parts[1] == "from":
                 start_from = parts[2]
             run_pipeline(
-                cfg, client, store, project, project_name,
+                pipeline_def, cfg, client, store, project, project_name,
                 agent_factory=create_agent,
                 start_from=start_from,
             )

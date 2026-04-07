@@ -13,6 +13,13 @@
 services:
 
   # ---------------------------------------------------------------
+  # Extend the main web service to connect to agent-hub-net
+  # ---------------------------------------------------------------
+  web:
+    networks:
+      - agent-hub-net
+
+  # ---------------------------------------------------------------
   # MCPO: MCP-to-OpenAPI proxy for Open WebUI
   # Wraps Agent Hub's MCP stdio server into an OpenAPI endpoint
   # that Open WebUI can consume as a tool server.
@@ -46,17 +53,24 @@ services:
     ports:
       - "3000:8080"
     environment:
-      # Point at your existing vLLM / OpenAI-compatible API
-      - OPENAI_API_BASE_URL=${API_BASE_URL}
-      - OPENAI_API_KEY=${API_KEY:-empty}
-      # Disable Ollama (we use vLLM)
+      # Point at Agent Hub's hybrid search endpoints
+      - OPENAI_API_BASE_URL=http://web:8080/v1
+      - OPENAI_API_KEY=${API_KEY:-agent-hub}
+      # Disable Ollama (we use Agent Hub)
       - OLLAMA_BASE_URL=
       # Secret key for auth (generate one: openssl rand -hex 32)
       - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY:-changeme}
+      # Pre-select expert agent as default model
+      - DEFAULT_MODELS=expert
+      # Env vars always win over persistent config database
+      - ENABLE_PERSISTENT_CONFIG=False
+      # Disable self-registration
+      - ENABLE_SIGNUP=False
     volumes:
       - open-webui-data:/app/backend/data
     restart: unless-stopped
     depends_on:
+      - web
       - mcpo
     networks:
       - agent-hub-net

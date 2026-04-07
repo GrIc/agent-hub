@@ -125,7 +125,7 @@ scanning:
 # If enabled, hybrid search boosts vector results that match graph neighbors.
 
 graph:
-  enabled: false                       # Opt-in. Set true to activate GraphRAG.
+  enabled: true                        # Opt-in. Set true to activate GraphRAG.
   persist_dir: ".graphdb"              # Directory for graph JSON files
   max_hops: 2                          # BFS depth for graph traversal
   graph_boost: 0.3                     # Score multiplier for graph-matched results

@@ -11,59 +11,21 @@ Each step:
   2. User sees all exchanges and validates output
   3. User can /finalize (proceed), /draft (retry), /rollback, or give feedback
 
-Pipeline steps:
-  portfolio -> specifier -> planner -> storyteller -> presenter -> developer
+Pipeline steps are defined in agents/pipelines/*.md and loaded via PipelineDefinition.
 """
 
 import logging
+from typing import Optional
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.markdown import Markdown
 
+from src.pipeline_loader import PipelineDefinition
+
 logger = logging.getLogger(__name__)
 console = Console()
-
-PIPELINE_STEPS = [
-    {
-        "agent": "portfolio",
-        "label": "Requirements",
-        "description": "Transform notes into functional requirements",
-        "doc_type": "requirements",
-        "needs_input": True,
-    },
-    {
-        "agent": "specifier",
-        "label": "Specifications + Architecture",
-        "description": "Translate requirements into technical specifications and architecture",
-        "doc_type": "specifications",
-    },
-    {
-        "agent": "planner",
-        "label": "Roadmap",
-        "description": "Break specifications into tasks with timeline",
-        "doc_type": "roadmap",
-    },
-    {
-        "agent": "storyteller",
-        "label": "Synthesis",
-        "description": "Produce a unified techno-functional synthesis document",
-        "doc_type": "synthesis",
-    },
-    {
-        "agent": "presenter",
-        "label": "Presentation",
-        "description": "Create a 10-slide deck from the synthesis",
-        "doc_type": "deck",
-    },
-    {
-        "agent": "developer",
-        "label": "Implementation",
-        "description": "Generate git diffs for each planned task",
-        "doc_type": None,  # Developer produces diffs, not versioned project docs
-    },
-]
 
 
 class AgentMessenger:
@@ -147,21 +109,22 @@ class AgentMessenger:
             return "[User declined to answer]"
 
 
-def show_pipeline_status(project):
+def show_pipeline_status(project, pipeline_def: PipelineDefinition):
     """Show which pipeline steps have outputs."""
     outputs = project.get_all_latest_outputs() if project else {}
     console.print("\n[bold]Pipeline status:[/bold]")
-    for step in PIPELINE_STEPS:
-        doc = step.get("doc_type", "")
+    for step in pipeline_def.steps:
+        doc = step.doc_type or ""
         if doc and doc in outputs:
             _, version = outputs[doc]
             status = f"[green]✅ v{version}[/green]"
         else:
             status = "[dim]⬜ not started[/dim]"
-        console.print(f"  {status}  {step['label']} ({step['agent']})")
+        console.print(f"  {status}  {step.label} ({step.agent})")
 
 
 def run_pipeline(
+    pipeline_def: PipelineDefinition,
     cfg: dict,
     client,
     store,
@@ -174,6 +137,7 @@ def run_pipeline(
     Execute the pipeline with user validation at each step.
 
     Args:
+        pipeline_def: PipelineDefinition loaded from markdown
         cfg: Configuration dict
         client: ResilientClient
         store: VectorStore
@@ -187,26 +151,26 @@ def run_pipeline(
     # Determine starting step
     start_idx = 0
     if start_from:
-        for i, step in enumerate(PIPELINE_STEPS):
-            if step["agent"] == start_from:
+        for i, step in enumerate(pipeline_def.steps):
+            if step.agent == start_from:
                 start_idx = i
                 break
         else:
             console.print(f"[red]Unknown pipeline step: {start_from}[/red]")
             console.print(
-                f"[dim]Available: {', '.join(s['agent'] for s in PIPELINE_STEPS)}[/dim]"
+                f"[dim]Available: {', '.join(s.agent for s in pipeline_def.steps)}[/dim]"
             )
             return "abort"
 
     steps_display = " → ".join(
-        f"[bold]{s['label']}[/bold]" if i >= start_idx else f"[dim]{s['label']}[/dim]"
-        for i, s in enumerate(PIPELINE_STEPS)
+        f"[bold]{s.label}[/bold]" if i >= start_idx else f"[dim]{s.label}[/dim]"
+        for i, s in enumerate(pipeline_def.steps)
     )
 
     console.print(Panel(
-        f"[bold]Pipeline: {project_name}[/bold]\n"
+        f"[bold]Pipeline: {pipeline_def.name}[/bold] — {pipeline_def.description}\n"
         f"Steps: {steps_display}\n"
-        f"Starting from: {PIPELINE_STEPS[start_idx]['label']}\n"
+        f"Starting from: {pipeline_def.steps[start_idx].label}\n"
         f"\nAt each step you can:\n"
         f"  • Chat with the agent to refine the output\n"
         f"  • [bold]/finalize[/bold] — validate and move to next step\n"
@@ -218,24 +182,24 @@ def run_pipeline(
         border_style="magenta",
     ))
 
-    for step_idx in range(start_idx, len(PIPELINE_STEPS)):
-        step = PIPELINE_STEPS[step_idx]
+    for step_idx in range(start_idx, len(pipeline_def.steps)):
+        step = pipeline_def.steps[step_idx]
         step_num = step_idx + 1
-        total = len(PIPELINE_STEPS)
+        total = len(pipeline_def.steps)
 
         console.print(Panel(
-            f"[bold]{step['label']}[/bold] — {step['description']}\n"
-            f"Agent: {step['agent']}",
+            f"[bold]{step.label}[/bold] — {step.description}\n"
+            f"Agent: {step.agent}",
             title=f"Step {step_num}/{total}",
             border_style="blue",
         ))
 
         # Create the agent for this step
         try:
-            agent = agent_factory(step["agent"], cfg, client, store, project)
+            agent = agent_factory(step.agent, cfg, client, store, project)
             if agent is None:
                 console.print(
-                    f"[red]Cannot create agent '{step['agent']}'. Skipping.[/red]"
+                    f"[red]Cannot create agent '{step.agent}'. Skipping.[/red]"
                 )
                 continue
         except Exception as e:
@@ -250,8 +214,9 @@ def run_pipeline(
             except Exception:
                 pass
 
-        # Hint for the first step
-        if step.get("needs_input") and step_idx == start_idx:
+        # Hint for the first step (check if first step has doc_type, used as proxy for needs_input)
+        first_step_needs_input = pipeline_def.steps[0].doc_type is not None
+        if first_step_needs_input and step_idx == start_idx:
             console.print(
                 "[yellow]Load your notes first with /load, "
                 "then start the conversation.[/yellow]"
@@ -264,7 +229,7 @@ def run_pipeline(
             console.print("[red]Pipeline aborted.[/red]")
             return "abort"
         elif step_result == "skip":
-            console.print(f"[yellow]Skipped: {step['label']}[/yellow]")
+            console.print(f"[yellow]Skipped: {step.label}[/yellow]")
             continue
         # "finalized" -> continue to next step
 
@@ -284,7 +249,7 @@ def _step_loop(agent, step, project_name) -> str:
     """
     while True:
         try:
-            prompt_prefix = f"(pipeline:{step['agent']}:{project_name})"
+            prompt_prefix = f"(pipeline:{step.agent}:{project_name})"
             user_input = Prompt.ask(f"\n[bold cyan]{prompt_prefix}[/bold cyan]")
         except (KeyboardInterrupt, EOFError):
             return "abort"
@@ -302,13 +267,13 @@ def _step_loop(agent, step, project_name) -> str:
             # Trigger finalization via the agent
             try:
                 with console.status("[bold green]Finalizing...", spinner="dots"):
-                    doc_type = step.get("doc_type", "document")
+                    doc_type = step.doc_type or "document"
                     response = agent.chat(
                         f"Generate the FINAL {doc_type}. "
                         f"Resolve all [TO BE CLARIFIED] items or list them "
                         f"in Assumptions. Use the appropriate output format tag."
                     )
-                console.print(f"\n[bold green]({step['agent']}):[/bold green]")
+                console.print(f"\n[bold green]({step.agent}):[/bold green]")
                 try:
                     console.print(Markdown(response))
                 except Exception:
@@ -328,7 +293,7 @@ def _step_loop(agent, step, project_name) -> str:
 
             with console.status("[bold green]Thinking...", spinner="dots"):
                 response = agent.chat(user_input)
-            console.print(f"\n[bold green]({step['agent']}):[/bold green]")
+            console.print(f"\n[bold green]({step.agent}):[/bold green]")
             try:
                 console.print(Markdown(response))
             except Exception:

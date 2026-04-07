@@ -10,6 +10,7 @@ Features:
 """
 
 import argparse
+import asyncio
 import json
 import logging
 import time
@@ -20,7 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 import uvicorn
 
 import sys
@@ -180,6 +181,52 @@ def create_app(cfg: dict) -> FastAPI:
 
     logger.info(f"[Web] Ready -- {len(agent_configs)} agents ({len(web_agents) - len(CORE_WEB_AGENTS)} custom), {store.count} chunks in index")
 
+    # -- Internal helper --
+
+    def _build_messages(query: str, agent_name: str, session_id: str) -> tuple[list[dict], list]:
+        """
+        Build messages list with system prompt, RAG context, peer reports, and history.
+        Returns (messages, rag_results).
+        """
+        acfg = agent_configs[agent_name]
+        results = store.search_hierarchical(query, top_k=rag_top_k)
+
+        system = acfg["system_prompt"]
+
+        if acfg["peers"]:
+            peer_context = load_peer_reports(acfg["peers"])
+            if peer_context:
+                system += f"\n\n{peer_context}"
+
+        if results:
+            context_parts = [
+                f"--- [Source {i}: {r['source']} (score: {r['score']:.2f})] ---\n{r['text']}"
+                for i, r in enumerate(results, 1)
+            ]
+            system += (
+                "\n\n## Retrieved context (codebase)\n"
+                "Use this information to answer. Cite sources if relevant.\n\n"
+                + "\n\n".join(context_parts)
+            )
+
+        history_key = f"{session_id}:{agent_name}"
+        history = sessions[history_key]
+
+        messages = [{"role": "system", "content": system}]
+        messages.extend(history[-MAX_HISTORY:])
+        messages.append({"role": "user", "content": query})
+
+        return messages, results
+
+    def _record_history(query: str, response: str, agent_name: str, session_id: str):
+        """Append query/response to session history."""
+        history_key = f"{session_id}:{agent_name}"
+        history = sessions[history_key]
+        history.append({"role": "user", "content": query})
+        history.append({"role": "assistant", "content": response})
+        if len(history) > MAX_HISTORY * 2:
+            sessions[history_key] = history[-MAX_HISTORY:]
+
     # -- Routes ---
 
     @app.get("/")
@@ -209,34 +256,8 @@ def create_app(cfg: dict) -> FastAPI:
         acfg = agent_configs[agent_name]
         start = time.time()
 
-        results = store.search_hierarchical(query, top_k=rag_top_k)
-
-        system = acfg["system_prompt"]
-
-        if acfg["peers"]:
-            peer_context = load_peer_reports(acfg["peers"])
-            if peer_context:
-                system += f"\n\n{peer_context}"
-
-        if results:
-            context_parts = [
-                f"--- [Source {i}: {r['source']} (score: {r['score']:.2f})] ---\n{r['text']}"
-                for i, r in enumerate(results, 1)
-            ]
-            system += (
-                "\n\n## Retrieved context (codebase)\n"
-                "Use this information to answer. Cite sources if relevant.\n\n"
-                + "\n\n".join(context_parts)
-            )
-
-        history_key = f"{session_id}:{agent_name}"
-        history = sessions[history_key]
-
-        messages = [{"role": "system", "content": system}]
-        messages.extend(history[-MAX_HISTORY:])
-        messages.append({"role": "user", "content": query})
-
         try:
+            messages, results = _build_messages(query, agent_name, session_id)
             response = client.chat(
                 messages=messages,
                 model=acfg["model"],
@@ -246,11 +267,7 @@ def create_app(cfg: dict) -> FastAPI:
             )
             duration_ms = int((time.time() - start) * 1000)
 
-            history.append({"role": "user", "content": query})
-            history.append({"role": "assistant", "content": response})
-            if len(history) > MAX_HISTORY * 2:
-                sessions[history_key] = history[-MAX_HISTORY:]
-
+            _record_history(query, response, agent_name, session_id)
             log_query(query, response, results, duration_ms, client_ip, agent_name)
 
             return {
@@ -258,12 +275,12 @@ def create_app(cfg: dict) -> FastAPI:
                 "agent": agent_name,
                 "sources": [{"file": r["source"], "score": round(r["score"], 3)} for r in results],
                 "duration_ms": duration_ms,
-                "history_length": len(sessions[history_key]),
+                "history_length": len(sessions[f"{session_id}:{agent_name}"]),
             }
         except Exception as e:
             duration_ms = int((time.time() - start) * 1000)
             error_msg = f"{type(e).__name__}: {str(e)[:200]}"
-            log_query(query, "", results, duration_ms, client_ip, agent_name, error=error_msg)
+            log_query(query, "", [], duration_ms, client_ip, agent_name, error=error_msg)
             return JSONResponse({"error": "LLM request failed.", "detail": error_msg}, status_code=502)
 
     @app.post("/api/clear")
@@ -363,6 +380,168 @@ def create_app(cfg: dict) -> FastAPI:
     # -- Workspace routes (full CLI in web) --
     from web.workspace_routes import register_workspace_routes
     register_workspace_routes(app, cfg, client, store)
+
+    # -- OpenAI-compatible API endpoints --
+
+    @app.get("/v1/models")
+    async def list_openai_models():
+        """Return all available agents in OpenAI model list format."""
+        return {
+            "object": "list",
+            "data": [
+                {
+                    "id": name,
+                    "object": "model",
+                    "owned_by": "agent-hub",
+                    "created": 0,
+                }
+                for name in agent_configs
+            ],
+        }
+
+    @app.post("/v1/chat/completions")
+    async def chat_completions(request: Request):
+        """OpenAI-compatible chat completions endpoint."""
+        body = await request.json()
+        model = body.get("model", "expert")
+        stream = body.get("stream", False)
+        messages_raw = body.get("messages", [])
+
+        # Resolve session_id
+        session_id = (
+            request.headers.get("X-Session-Id")
+            or body.get("user", {}).get("id", "openwebui-default")
+        )
+
+        # Fallback to expert if model not in agent_configs
+        if model not in agent_configs:
+            model = "expert"
+
+        acfg = agent_configs[model]
+
+        # Extract last user message content (handle string or list of {type, text})
+        query = ""
+        for msg in reversed(messages_raw):
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    query = content
+                    break
+                elif isinstance(content, list):
+                    # Multimodal format: [{type: "text", text: "..."}, ...]
+                    parts = []
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            parts.append(item.get("text", ""))
+                    query = "\n".join(parts)
+                    break
+
+        if not query:
+            return JSONResponse(
+                {"error": "No user message found"}, status_code=400
+            )
+
+        chat_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+
+        if stream:
+            async def stream_generator():
+                try:
+                    messages, _ = _build_messages(query, model, session_id)
+
+                    def sync_stream():
+                        """Synchronous wrapper to iterate over chat_stream()."""
+                        for chunk in client.chat_stream(
+                            messages=messages,
+                            model=acfg["model"],
+                            temperature=acfg["temperature"],
+                            max_tokens=4096,
+                            **acfg.get("extra_params", {}),
+                        ):
+                            yield chunk
+
+                    full_response = []
+                    loop = asyncio.get_event_loop()
+                    chunks_iter = await loop.run_in_executor(None, lambda: list(sync_stream()))
+
+                    for chunk_text in chunks_iter:
+                        full_response.append(chunk_text)
+                        data = json.dumps({
+                            "id": chat_id,
+                            "object": "chat.completion.chunk",
+                            "model": model,
+                            "choices": [{
+                                "index": 0,
+                                "delta": {"content": chunk_text},
+                                "finish_reason": None,
+                            }],
+                        })
+                        yield f"data: {data}\n\n"
+
+                    # Final chunk with finish_reason
+                    final_data = json.dumps({
+                        "id": chat_id,
+                        "object": "chat.completion.chunk",
+                        "model": model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": "stop",
+                        }],
+                    })
+                    yield f"data: {final_data}\n\n"
+                    yield "data: [DONE]\n\n"
+
+                    # Record history and log
+                    response_text = "".join(full_response)
+                    _record_history(query, response_text, model, session_id)
+
+                except Exception as e:
+                    error_data = json.dumps({
+                        "id": chat_id,
+                        "object": "chat.completion.chunk",
+                        "model": model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"content": f"[Error: {type(e).__name__}: {e}]"},
+                            "finish_reason": "stop",
+                        }],
+                    })
+                    yield f"data: {error_data}\n\n"
+                    yield "data: [DONE]\n\n"
+
+            return StreamingResponse(
+                stream_generator(),
+                media_type="text/event-stream",
+                headers={"X-Accel-Buffering": "no"},
+            )
+        else:
+            # Non-streaming
+            try:
+                messages, results = _build_messages(query, model, session_id)
+                response = client.chat(
+                    messages=messages,
+                    model=acfg["model"],
+                    temperature=acfg["temperature"],
+                    max_tokens=4096,
+                    **acfg.get("extra_params", {}),
+                )
+                _record_history(query, response, model, session_id)
+
+                return {
+                    "id": chat_id,
+                    "object": "chat.completion",
+                    "model": model,
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": response},
+                        "finish_reason": "stop",
+                    }],
+                }
+            except Exception as e:
+                return JSONResponse(
+                    {"error": f"LLM request failed: {type(e).__name__}: {str(e)[:200]}"},
+                    status_code=502,
+                )
 
     return app
 

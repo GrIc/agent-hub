@@ -13,7 +13,7 @@ import os
 import time
 import random
 import logging
-from typing import Optional
+from typing import Iterator, Optional
 
 import httpx
 from openai import OpenAI
@@ -156,6 +156,172 @@ class ResilientClient:
                 else:
                     logger.error(f"[Chat] All models exhausted. Last error: {_format_error(e)}")
                     raise
+
+    def chat_stream(
+        self,
+        messages: list[dict],
+        model: str,
+        temperature: float = 0.5,
+        max_tokens: int = 4096,
+        fallback_models: Optional[list[str]] = None,
+        **kwargs,
+    ) -> Iterator[str]:
+        """
+        Stream a chat completion, yielding chunks of text.
+
+        Tries native streaming first (stream=True). If the upstream does not
+        support it (exception or no delta.content), falls back to calling
+        self.chat() and yields the full response in a single chunk.
+
+        Respects the same retry logic as chat().
+        """
+        models_to_try = [model] + (fallback_models or [])
+
+        total_chars = sum(len(m.get("content", "")) for m in messages)
+        logger.info(
+            f"[ChatStream] model={model}, messages={len(messages)}, "
+            f"total_chars={total_chars}, temperature={temperature}"
+        )
+
+        for i, current_model in enumerate(models_to_try):
+            try:
+                yielded = False
+                for chunk in self._chat_stream_with_retry(
+                    messages=messages,
+                    model=current_model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    **kwargs,
+                ):
+                    yielded = True
+                    yield chunk
+
+                if yielded:
+                    return
+
+                # Native streaming returned nothing — fallback
+                logger.warning(
+                    f"[ChatStream] Native streaming yielded nothing for {current_model}, "
+                    f"falling back to non-streaming chat()"
+                )
+
+            except Exception as e:
+                # Check if this is a streaming-unsupported error
+                err_str = str(e).lower()
+                is_stream_error = any(
+                    kw in err_str
+                    for kw in ("stream", "not supported", "not available")
+                )
+
+                if is_stream_error or not yielded:
+                    # Fallback: use non-streaming chat
+                    logger.warning(
+                        f"[ChatStream] Streaming not supported by upstream for "
+                        f"{current_model}: {_format_error(e)}. Falling back to chat()."
+                    )
+                    try:
+                        full_response = self.chat(
+                            messages=messages,
+                            model=current_model,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            fallback_models=None,  # Don't recurse into fallbacks again
+                            **kwargs,
+                        )
+                        yield full_response
+                        return
+                    except Exception as fallback_exc:
+                        logger.error(
+                            f"[ChatStream] Fallback chat() also failed: {_format_error(fallback_exc)}"
+                        )
+                        raise
+
+                if i < len(models_to_try) - 1:
+                    logger.warning(
+                        f"[ChatStream] Model {current_model} failed: {_format_error(e)}. "
+                        f"Falling back to {models_to_try[i+1]}"
+                    )
+                else:
+                    logger.error(
+                        f"[ChatStream] All models exhausted. Last error: {_format_error(e)}"
+                    )
+                    raise
+
+        # Should not reach here, but safety net
+        logger.warning("[ChatStream] No content yielded — returning empty")
+        yield ""
+
+    def _chat_stream_with_retry(
+        self,
+        messages: list[dict],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+        **kwargs,
+    ) -> Iterator[str]:
+        """
+        Native streaming request with exponential-backoff retry.
+
+        Yields delta.content chunks. Skips chunks where delta.content is None.
+        """
+        last_exc = None
+        for attempt in range(self.max_retries):
+            try:
+                logger.debug(
+                    f"[ChatStream] Attempt {attempt+1}/{self.max_retries} -> "
+                    f"POST {self.base_url}/chat/completions model={model} (stream=True)"
+                )
+                stream = self.client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=True,
+                    **kwargs,
+                )
+
+                had_content = False
+                for chunk in stream:
+                    delta = chunk.choices[0].delta if chunk.choices else None
+                    if delta is None:
+                        continue
+                    content = delta.content
+                    if content is None:
+                        continue
+                    had_content = True
+                    yield content
+
+                if not had_content:
+                    logger.warning(
+                        f"[ChatStream] Native stream returned no content for {model}"
+                    )
+
+                return
+
+            except Exception as e:
+                last_exc = e
+                retryable = _is_retryable(e)
+                detail = _format_error(e)
+
+                if not retryable:
+                    logger.error(
+                        f"[ChatStream] Non-retryable error on attempt {attempt+1}: {detail}"
+                    )
+                    raise
+
+                delay = min(
+                    self.base_delay * (2 ** attempt) + random.uniform(0, 1),
+                    self.max_delay,
+                )
+                logger.warning(
+                    f"[ChatStream] Attempt {attempt+1}/{self.max_retries} failed: {detail} "
+                    f"-- retrying in {delay:.1f}s"
+                )
+                time.sleep(delay)
+
+        raise RuntimeError(
+            f"All {self.max_retries} attempts failed for streaming model {model}: {_format_error(last_exc)}"
+        ) from last_exc
 
     def _complete_response(
         self,
