@@ -17,11 +17,12 @@ from src.config import (
     load_config, get_model_for_agent, get_agent_temperature,
     build_custom_dsl_context, build_domain_context, get_agent_extra_params,
 )
+from src.agents.pipeline import PIPELINE_STEPS
 from src.client import ResilientClient
 from src.rag.store import VectorStore
 from src.projects import Project, get_or_create_project, list_projects
 from src.agent_defs import load_agent_definition, list_available_agents
-from src.pipeline import PIPELINE_STEPS
+from src.agents.pipeline import PIPELINE_STEPS
 
 # Core agent classes
 from src.agents.base import BaseAgent
@@ -152,28 +153,33 @@ class WorkspaceSession:
         }
 
         # Include info about files generated in this response
-        if hasattr(self.agent, "files_generated") and self.agent.files_generated:
+        if self.agent and hasattr(self.agent, "files_generated") and self.agent.files_generated:
             result["files_generated"] = list(self.agent.files_generated)
 
         # Include pipeline state
         if self.pipeline_active:
+            step = None
+            if self.pipeline_step_idx < len(PIPELINE_STEPS):
+                step = PIPELINE_STEPS[self.pipeline_step_idx]
             result["pipeline"] = {
                 "active": True,
                 "step_idx": self.pipeline_step_idx,
-                "step": PIPELINE_STEPS[self.pipeline_step_idx] if self.pipeline_step_idx < len(PIPELINE_STEPS) else None,
+                "step": step,
                 "total_steps": len(PIPELINE_STEPS),
             }
 
         # Check for recently saved versioned outputs (for right panel auto-update)
-        if self.project and hasattr(self.agent, "doc_type") and self.agent.doc_type:
-            latest = self.project.load_latest_output(self.agent.doc_type)
-            if latest:
-                content, version = latest
-                result["latest_output"] = {
-                    "doc_type": self.agent.doc_type,
-                    "version": version,
-                    "path": f"outputs/{self.agent.doc_type}_v{version}.md",
-                }
+        if self.project and self.agent and hasattr(self.agent, "doc_type"):
+            doc_type = getattr(self.agent, "doc_type", None)
+            if doc_type:
+                latest = self.project.load_latest_output(doc_type)
+                if latest:
+                    content, version = latest
+                    result["latest_output"] = {
+                        "doc_type": doc_type,
+                        "version": version,
+                        "path": f"outputs/{doc_type}_v{version}.md",
+                    }
 
         return result
 
@@ -199,9 +205,9 @@ class WorkspaceSession:
         self.switch_agent(step["agent"])
 
         # Auto-load project context
-        if hasattr(self.agent, "_load_project_context"):
+        if self.agent and hasattr(self.agent, "_load_project_context"):
             try:
-                self.agent._load_project_context()
+                getattr(self.agent, "_load_project_context")()
             except Exception:
                 pass
 
@@ -227,9 +233,9 @@ class WorkspaceSession:
         self.switch_agent(step["agent"])
 
         # Auto-load context
-        if hasattr(self.agent, "_load_project_context"):
+        if self.agent and hasattr(self.agent, "_load_project_context"):
             try:
-                self.agent._load_project_context()
+                getattr(self.agent, "_load_project_context")()
             except Exception:
                 pass
 
@@ -318,7 +324,7 @@ class WorkspaceSession:
             "session_id": self.session_id,
             "project": self.project_name,
             "agent": self.agent_name,
-            "agent_info": ALL_WORKSPACE_AGENTS.get(self.agent_name, {}),
+            "agent_info": ALL_WORKSPACE_AGENTS.get(self.agent_name or "", {}),
             "history_length": len(self.agent.history) if self.agent else 0,
         }
         if self.pipeline_active:

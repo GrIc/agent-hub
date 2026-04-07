@@ -46,7 +46,7 @@ def load_config(config_path: str = "config.yaml") -> dict[str, Any]:
     for key, env_var in env_model_keys.items():
         env_val = os.getenv(env_var)
         if env_val:
-            cfg["models"].setdefault(key, env_val)
+            cfg["models"][key] = env_val  # .env overrides config.yaml
 
     cfg["_defaults"] = defaults
     return cfg

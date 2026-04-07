@@ -1,4 +1,5 @@
 openai>=1.0
+networkx>=3.0
 httpx>=0.25
 chromadb>=0.4
 pyyaml>=6.0

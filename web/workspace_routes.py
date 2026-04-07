@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, FileResponse
 
 from src.workspace_session import SessionManager, ALL_WORKSPACE_AGENTS
 from src.projects import list_projects, get_or_create_project
-from src.pipeline import PIPELINE_STEPS
+from src.agents.pipeline import PIPELINE_STEPS
 
 logger = logging.getLogger(__name__)
 
