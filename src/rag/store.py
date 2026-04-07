@@ -113,11 +113,25 @@ class VectorStore:
 
             try:
                 embeddings = self.llm_client.embed(texts, model=self.embed_model)
+                seen_ids = set()
+                unique_ids = []
+                unique_docs = []
+                unique_metas = []
+                unique_embeds = []
+                for idx, doc_id in enumerate(ids):
+                    if doc_id not in seen_ids:
+                        seen_ids.add(doc_id)
+                        unique_ids.append(doc_id)
+                        unique_docs.append(texts[idx])
+                        unique_metas.append(metadatas[idx])
+                        unique_embeds.append(embeddings[idx])
+                    else:
+                        print(f"Ignored duplicate ID in batch: {doc_id}")
                 self.collection.add(
-                    ids=ids,
-                    embeddings=embeddings,
-                    documents=texts,
-                    metadatas=metadatas,
+                    ids=unique_ids,
+                    embeddings=unique_embeds,
+                    documents=unique_docs,
+                    metadatas=unique_metas,
                 )
                 added += len(batch)
                 if batch_num % 10 == 0 or batch_num == total_batches:

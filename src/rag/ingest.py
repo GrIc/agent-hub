@@ -175,13 +175,13 @@ def chunk_text(
         #    "chunk_index": idx,
         #    "doc_level": doc_level,
         #})
-        stripped_chunk = chunk.strip()
-        if stripped_chunk:
+        clean_chunk = chunk.strip().replace('\x00', '').replace('\0', '')  # Remove null chars
+        if clean_chunk:
             chunks.append({
-                "text": stripped_chunk,
-                "source": source,
-                "chunk_index": idx,
-                "doc_level": doc_level,
+                "text": clean_chunk,
+                "source": str(source) if source is not None else "unknown",
+                "chunk_index": int(idx),
+                "doc_level": str(doc_level) if doc_level is not None else "unknown",
             })
         start = end - overlap
         idx += 1

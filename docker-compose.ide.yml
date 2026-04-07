@@ -4,11 +4,14 @@
 # Usage: docker compose -f docker-compose.yml -f docker-compose.ide.yml up -d
 #
 # This adds:
-#   - Open WebUI: polished chat UI pointing at your vLLM + Agent Hub MCP tools
-#   - MCPO: MCP-to-OpenAPI proxy that bridges Agent Hub's MCP server to Open WebUI
+#   - Open WebUI: chat UI pre-configured with Agent Hub hybrid search (RAG + GraphRAG)
 #
 # Your existing Agent Hub web + indexer services continue to run unchanged.
-# Continue.dev connects directly to Agent Hub's MCP SSE endpoint (no extra container).
+#
+# IDE clients (Roo Code, Continue.dev, Cursor) connect directly to Agent Hub:
+#   - Chat / hybrid search : http://localhost:8080/v1  (OpenAI-compatible)
+#   - MCP tools            : http://localhost:8080/mcp/sse  (MCP SSE)
+# See continue-sse.yaml for a ready-to-use MCP config.
 
 services:
 
@@ -20,38 +23,14 @@ services:
       - agent-hub-net
 
   # ---------------------------------------------------------------
-  # MCPO: MCP-to-OpenAPI proxy for Open WebUI
-  # Wraps Agent Hub's MCP stdio server into an OpenAPI endpoint
-  # that Open WebUI can consume as a tool server.
-  # ---------------------------------------------------------------
-  mcpo:
-    image: ghcr.io/open-webui/mcpo:main
-    container_name: agent-hub-mcpo
-    ports:
-      - "8001:8000"
-    volumes:
-      - ./mcp-configs/mcpo-config.json:/app/config/config.json:ro
-      - .:/app/agent-hub:ro           # Mount agent-hub source for stdio MCP
-      - ./.env:/app/agent-hub/.env:ro  # Pass env vars to MCP server
-      - ./.vectordb:/app/agent-hub/.vectordb  # Share vector DB
-      - ./context:/app/agent-hub/context      # Share context docs
-      - ./workspace:/app/agent-hub/workspace  # Share workspace
-      - ./projects:/app/agent-hub/projects    # Share projects
-    working_dir: /app
-    command: mcpo --config /app/config/config.json
-    restart: unless-stopped
-    networks:
-      - agent-hub-net
-
-  # ---------------------------------------------------------------
   # Open WebUI: polished multi-user chat interface
-  # Connects to your vLLM backend for models + MCPO for Agent Hub tools
+  # Connects to Agent Hub /v1/* for hybrid search (RAG + GraphRAG)
   # ---------------------------------------------------------------
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
     container_name: agent-hub-openwebui
     ports:
-      - "3000:8080"
+      - "${OPENWEBUI_PORT:-3000}:8080"
     environment:
       # Point at Agent Hub's hybrid search endpoints
       - OPENAI_API_BASE_URL=http://web:8080/v1
@@ -59,7 +38,7 @@ services:
       # Disable Ollama (we use Agent Hub)
       - OLLAMA_BASE_URL=
       # Secret key for auth (generate one: openssl rand -hex 32)
-      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY:-changeme}
+      - WEBUI_SECRET_KEY=${OPENWEBUI_SECRET_KEY:-changeme}
       # Pre-select expert agent as default model
       - DEFAULT_MODELS=expert
       # Env vars always win over persistent config database
@@ -71,7 +50,6 @@ services:
     restart: unless-stopped
     depends_on:
       - web
-      - mcpo
     networks:
       - agent-hub-net
 

@@ -1,21 +1,16 @@
 # .continue/mcpServers/agent-hub.yaml
 #
-# Continue.dev MCP configuration for Agent Hub.
+# Continue.dev MCP configuration for Agent Hub (SSE mode).
 # Drop this file into .continue/mcpServers/ at the root of your workspace.
 #
-# This connects Continue's agent mode to Agent Hub's MCP server,
-# giving it access to: expert_ask, search_rag, read_file, edit_file,
-# list_deliverables, read_deliverable, apply_deliverable.
-#
 # Prerequisites:
-#   - Agent Hub server running (python -m web.server or docker compose up)
+#   - Agent Hub running (docker compose up OR python -m web.server)
 #   - MCP SSE endpoint available at http://localhost:8080/mcp/sse
 #
 # Usage in Continue:
-#   1. Switch to "Agent" mode (not Chat or Edit)
-#   2. Ask: "Use expert_ask to explain how authentication works in the codebase"
-#   3. Or: "List deliverables for project 'my-feature' and show me the latest spec"
-#   4. Or: "Apply the specifications_v2.md deliverable from project 'my-feature' in dry run"
+#   1. Switch to "Agent" mode (MCP tools only work in Agent mode, not Chat)
+#   2. Ask: "Use expert_ask to explain how authentication works"
+#   3. Or: "Search the RAG index for database migration patterns"
 
 name: Agent Hub
 version: 0.1.0
@@ -25,5 +20,5 @@ mcpServers:
   - name: Agent Hub
     transport: sse
     url: http://localhost:8080/mcp/sse
-    # Increase timeout for LLM-heavy operations like apply_deliverable
+    # Increase timeout for LLM-heavy operations (apply_deliverable, expert_ask)
     connectionTimeout: 300000

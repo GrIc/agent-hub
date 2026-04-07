@@ -326,121 +326,165 @@ Stored in `context/changelog/YYYY-MM-DD.md`. Viewable at `/docs` → Changelog t
 
 ## IDE Integration
 
-Agent Hub exposes its 7 tools via two integrations: **Open WebUI** (web chat) and **Continue.dev** (IDE extensions).
+Agent Hub exposes two complementary interfaces once deployed:
+
+| Interface | URL | Use case |
+|-----------|-----|----------|
+| **Open WebUI** | `http://localhost:3000` | Chat UI with hybrid search (RAG + GraphRAG) |
+| **Chat API** | `http://localhost:8080/v1` | Any OpenAI-compatible client (Roo Code, Cursor, etc.) |
+| **MCP tools** | `http://localhost:8080/mcp/sse` | Agent Hub tools in IDE agent mode |
 
 ### Architecture
 
 ```
- VS Code / IntelliJ                Your browser
- ┌───────────────┐                ┌───────────────┐
- │  Continue.dev │                │  Open WebUI   │
- │  (extension)  │                │  (Docker)     │
- └──────┬────────┘                └──────┬────────┘
-        │ MCP SSE                        │ OpenAPI
-        │                                │
-        │                         ┌──────┴────────┐
-        │                         │     MCPO      │
-        │                         │ MCP→OpenAPI   │
-        │                         └──────┬────────┘
-        │                                │ MCP stdio
-        │                                │
- ┌──────┴────────────────────────────────┴────────┐
- │              Agent Hub MCP Server              │
- │        src/mcp_server.py (7 tools)             │
- ├────────────────────────────────────────────────┤
- │  Expert Agent │ Developer Agent │ RAG Store    │
- │  (code Q&A)   │ (file edits)   │ (ChromaDB)    │
- ├────────────────────────────────────────────────┤
- │           vLLM (Mistral models)                │
- └────────────────────────────────────────────────┘
+ VS Code / IntelliJ / Cursor            Your browser
+ ┌──────────────────────────┐          ┌───────────────┐
+ │  Roo Code / Continue.dev │          │  Open WebUI   │
+ └────────────┬─────────────┘          └──────┬────────┘
+              │                               │
+    ┌─────────┴──────────┐                   │
+    │  MCP SSE (tools)   │  OpenAI API       │
+    │  /mcp/sse          │  /v1/chat/        │
+    │                    │  completions      │
+    └─────────┬──────────┘                   │
+              │                               │
+ ┌────────────┴───────────────────────────────┴────────┐
+ │                  Agent Hub  :8080                   │
+ │                                                     │
+ │   /v1/chat/completions ──► RAG + GraphRAG + LLM     │
+ │   /mcp/sse             ──► expert_ask, search_rag…  │
+ │   /api/ask             ──► Web UI internal          │
+ ├─────────────────────────────────────────────────────┤
+ │   ChromaDB (.vectordb)   │   KnowledgeGraph (.graphdb) │
+ └─────────────────────────────────────────────────────┘
 ```
 
 ### Setup: Open WebUI
 
-**1. Start Agent Hub + Open WebUI + MCPO**
+**1. Start all services**
 
 ```bash
-# First, install MCP package (if not already done)
-pip install mcp[server]
-
-# Start all services
 docker compose -f docker-compose.yml -f docker-compose.ide.yml up -d
-
-# Open WebUI is at http://localhost:3000
-# Create your admin account on first visit
 ```
 
-**2. Connect Agent Hub tools in Open WebUI**
+Open WebUI is at `http://localhost:3000`.
 
-1. Click the **gear icon** (Admin Settings)
-2. Navigate to **External Tools** → **+ Add**
-3. **Type**: OpenAPI
-4. **URL**: `http://mcpo:8000` (if running on same machine) or `http://localhost:8001` (from host)
-5. **Save**
+On first visit, create your admin account. Open WebUI is already pre-configured:
+- **Model**: `expert` (Agent Hub expert agent with hybrid search)
+- **API**: points to Agent Hub `/v1/*` — every message goes through RAG + GraphRAG
+- Switch models from the dropdown to use any other agent (`documenter`, `specifier`, etc.)
 
-The 7 Agent Hub tools appear in the tool list automatically. Enable them in any chat:
-- Click **+ Tools** in the chat interface
-- Check boxes for the tools you want (expert_ask, file_edit, etc.)
-- Start chatting
+No additional configuration needed.
 
-**Tools available**:
-| Tool | Description |
-|------|-------------|
-| `expert_ask` | Q&A about code — RAG-powered code understanding |
-| `file_edit` | Apply git diffs to files |
-| `deliverables_list` | List deliverables for a project |
-| `deliverables_apply` | Apply specs/requirements to generate diffs |
-| `workspace_tree` | Browse workspace file tree |
-| `search_rag` | Search the RAG index directly |
-| `ingest_files` | Index additional files into RAG |
+---
 
-### Setup: Continue.dev (VS Code)
+### Setup: Roo Code
+
+Roo Code connects to Agent Hub for both **chat** (hybrid search) and **tools** (MCP).
+
+**1. Install Roo Code**
+
+Install the [Roo Code extension](https://marketplace.visualstudio.com/items?itemName=RooVeterinaryInc.roo-cline) from the VS Code marketplace.
+
+**2. Configure the LLM provider**
+
+In Roo Code settings, add a custom OpenAI-compatible provider:
+
+| Field | Value |
+|-------|-------|
+| Provider | OpenAI Compatible |
+| Base URL | `http://localhost:8080/v1` |
+| API Key | *(your `API_KEY` from `.env`)* |
+| Model | `expert` |
+
+Every chat message will go through Agent Hub's full hybrid search pipeline.
+
+**3. Configure MCP tools**
+
+Add this to your Roo Code MCP config (`.roo/mcp.json` or via Settings → MCP Servers):
+
+```json
+{
+  "mcpServers": {
+    "agent-hub": {
+      "type": "sse",
+      "url": "http://localhost:8080/mcp/sse"
+    }
+  }
+}
+```
+
+Roo Code can now call Agent Hub tools during agentic tasks:
+- `expert_ask` — RAG-powered code Q&A
+- `search_rag` — Search the index directly
+- `workspace_tree` — Browse the workspace
+- `file_edit` — Apply diffs to files
+- `deliverables_list` / `deliverables_apply` — Project deliverables
+
+---
+
+### Setup: Continue.dev
+
+Continue.dev connects to Agent Hub for **tools** (MCP) in Agent mode. For chat, configure it as an OpenAI-compatible provider the same way as Roo Code above.
 
 **1. Install Continue**
 
-- Open VS Code Extensions
-- Search for "Continue" and install from the marketplace
-- Or install from https://continue.dev
+- VS Code: search "Continue" in the Extensions marketplace
+- JetBrains: search "Continue" in the JetBrains Marketplace
 
-**2. Create the MCP config**
+**2. Configure MCP tools**
 
 ```bash
-# Create config directory
 mkdir -p .continue/mcpServers
-
-# Copy the Agent Hub SSE config (when Agent Hub is running)
-# See files: continue-sse.yaml (remote), continue-stdio.yaml (local)
 cp continue-sse.yaml .continue/mcpServers/agent-hub.yaml
 ```
 
-**3. Using Continue in VS Code**
+The `continue-sse.yaml` file at the root of this repo is ready to use. It points to `http://localhost:8080/mcp/sse`.
 
-1. Open the **Continue sidebar** (icon in the left panel)
-2. Switch to **Agent** mode (MCP tools only work in Agent mode)
-3. Ask anything and the Agent Hub tools will be available:
-   - "Use expert_ask to explain the authentication module"
-   - "List deliverables for project my-feature"
-   - "Apply specifications_v2.md from project my-feature in dry-run mode"
+If Agent Hub runs on a different host or port, edit the `url` field in the copied file.
 
-### Setup: Continue.dev (IntelliJ IDEA)
+**3. Configure the chat provider** *(optional)*
 
-Same process as VS Code:
-1. Install "Continue" from JetBrains Marketplace
-2. Copy `.continue/mcpServers/agent-hub.yaml` config
-3. Switch to Agent mode and use the same prompts
+In `.continue/config.yaml`:
 
-Continue.dev supports VS Code, IntelliJ, PyCharm, WebStorm, and other JetBrains IDEs.
+```yaml
+models:
+  - title: Agent Hub — Expert
+    provider: openai
+    model: expert
+    apiBase: http://localhost:8080/v1
+    apiKey: <your API_KEY>
+  - title: Agent Hub — Documenter
+    provider: openai
+    model: documenter
+    apiBase: http://localhost:8080/v1
+    apiKey: <your API_KEY>
+```
 
-### Why this approach
+**4. Using Agent mode**
 
-| Aspect | Custom extensions | Continue.dev + Open WebUI |
-|--------|---|---|
-| Maintenance | You maintain TS + Kotlin code | Zero client code |
-| Updates | Manual rebuild per IDE update | Community-maintained, auto-updates |
-| Chat UX | Basic | Full: voice, RBAC, model switching |
-| IDE support | VS Code + IntelliJ | VS Code + JetBrains + Neovim + Vim |
-| Other MCP tools | Only Agent Hub | Mix Agent Hub with any MCP server |
-| Deploy time | Hours (compile, package) | Minutes (config file) |
+1. Open the Continue sidebar
+2. Switch to **Agent** mode (tools only work in Agent mode, not Chat)
+3. Agent Hub tools are available automatically:
+   - *"Use expert_ask to explain the authentication module"*
+   - *"Search the RAG index for database migration patterns"*
+   - *"List deliverables for project my-feature"*
+
+Continue.dev works in VS Code, IntelliJ, PyCharm, WebStorm, and all JetBrains IDEs.
+
+---
+
+### Available MCP tools
+
+| Tool | Description |
+|------|-------------|
+| `expert_ask` | RAG-powered code Q&A with full hybrid search |
+| `search_rag` | Search the vector index directly |
+| `workspace_tree` | Browse the workspace file tree |
+| `file_edit` | Apply git diffs to workspace files |
+| `deliverables_list` | List project deliverables (specs, roadmaps…) |
+| `deliverables_apply` | Apply a deliverable (dry-run or live) |
+| `ingest_files` | Index additional files into RAG on the fly |
 
 ---
 
@@ -486,10 +530,9 @@ Agent Hub has **two deployment modes**:
 **With IDE integration** (add `docker-compose.ide.yml`):
 | Container | Purpose |
 |---|---|
-| `agent-hub-web` | Web UI (expert + workspace + docs) on port 8080 |
+| `agent-hub-web` | Web UI + `/v1/*` API + MCP SSE on port 8080 |
 | `agent-hub-indexer` | Periodic indexer (watch → synthesize → ingest) |
 | `open-webui` | Chat frontend for Agent Hub on port 3000 |
-| `mcpo` | MCP↔OpenAPI bridge for Open WebUI on port 8001 |
 
 ### Setup
 
@@ -535,7 +578,6 @@ docker compose logs -f
 docker compose logs -f web       # Agent Hub web
 docker compose logs -f indexer   # Indexer
 docker compose logs -f open-webui  # Open WebUI
-docker compose logs -f mcpo      # MCPO bridge
 ```
 
 ---
@@ -633,12 +675,9 @@ agent-hub/
 ├── src/
 │   └── mcp_server.py         ← MCP server for IDE integration (7 tools)
 │
-├── mcp-configs/
-│   └── mcpo-config.json      ← MCPO bridge config for Docker
-│
-├── docker-compose.ide.yml    ← Open WebUI + MCPO services (optional)
-├── continue-sse.yaml         ← Continue.dev config (MCP SSE, remote)
-├── continue-stdio.yaml       ← Continue.dev config (MCP stdio, local)
+├── docker-compose.ide.yml    ← Open WebUI service (optional)
+├── continue-sse.yaml         ← Continue.dev / Roo Code MCP config (copy into your project)
+├── continue-stdio.yaml       ← Continue.dev MCP config (local dev, no Docker)
 │
 └── scripts/
     ├── deploy.sh             ← Docker management helper
