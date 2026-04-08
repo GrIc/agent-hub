@@ -50,4 +50,4 @@ Wrap the specification document with ```specifications_md and ```.
 - **expert**: can answer questions about existing code behavior
 - **planner**: will break your specs into tasks
 - **documenter**: provides knowledge of the existing codebase
-- **developer**: will implement based on your specifications
+- **code**: will implement based on your specifications

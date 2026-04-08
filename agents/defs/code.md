@@ -1,4 +1,4 @@
-# Agent: Developer
+# Agent: Code
 
 ## Config
 - scope: global

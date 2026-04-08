@@ -22,19 +22,23 @@ from src.client import ResilientClient
 from src.rag.store import VectorStore
 from src.projects import Project, get_or_create_project, list_projects
 from src.agent_defs import load_agent_definition, list_available_agents
-from src.agents.pipeline import PIPELINE_STEPS
 
 # Core agent classes
 from src.agents.base import BaseAgent
 from src.agents.project_agent import ProjectAgent
 from src.agents.codex import CodexAgent
 from src.agents.documenter import DocumenterAgent
-from src.agents.developer import DeveloperAgent
+from src.agents.code import CodeAgent
 from src.agents.portfolio import PortfolioAgent
 from src.agents.specifier import SpecifierAgent
 from src.agents.planner import PlannerAgent
 from src.agents.storyteller import StorytellerAgent
 from src.agents.presenter import PresenterAgent
+# Agents for Roo Code
+from src.agents.architect import ArchitectAgent
+from src.agents.ask import AskAgent
+from src.agents.debug import DebugAgent
+from src.agents.orchestrator import OrchestratorAgent
 
 logger = logging.getLogger(__name__)
 
@@ -42,12 +46,16 @@ logger = logging.getLogger(__name__)
 AGENT_CLASSES = {
     "codex": CodexAgent,
     "documenter": DocumenterAgent,
-    "developer": DeveloperAgent,
+    "code": CodeAgent,
     "portfolio": PortfolioAgent,
     "specifier": SpecifierAgent,
     "planner": PlannerAgent,
     "storyteller": StorytellerAgent,
     "presenter": PresenterAgent,
+    "architect": ArchitectAgent,
+    "ask": AskAgent,
+    "debug": DebugAgent,
+    "orchestrator": OrchestratorAgent,
 }
 
 # Project-scoped agents
@@ -55,17 +63,26 @@ PROJECT_AGENT_NAMES = {
     "portfolio", "specifier", "planner", "storyteller", "presenter",
 }
 
+# Global agents (available in all contexts)
+GLOBAL_AGENT_NAMES = {
+    "expert", "codex", "documenter", "code", "architect", "ask", "debug", "orchestrator"
+}
+
 # All agents available in workspace (including CLI-only ones)
 ALL_WORKSPACE_AGENTS = {
-    "expert":      {"emoji": "🧠", "desc": "Code Q&A, review & debug", "scope": "global"},
+    "expert":      {"emoji": "🧠", "desc": "Code Q&A, review & debug — primary assistant for developers", "scope": "global"},
     "codex":       {"emoji": "🔬", "desc": "Scan codebase, generate docs for RAG", "scope": "global"},
     "documenter":  {"emoji": "📐", "desc": "Architecture docs & diagrams", "scope": "global"},
-    "developer":   {"emoji": "🔧", "desc": "Implement tasks, generate git diffs", "scope": "global"},
+    "code":        {"emoji": "🔧", "desc": "Implement tasks, generate git diffs", "scope": "global"},
     "portfolio":   {"emoji": "📋", "desc": "Notes -> functional requirements", "scope": "project"},
     "specifier":   {"emoji": "📝", "desc": "Requirements -> specs + architecture", "scope": "project"},
     "planner":     {"emoji": "📅", "desc": "Specs -> roadmap with tasks", "scope": "project"},
     "storyteller": {"emoji": "📖", "desc": "All docs -> techno-functional synthesis", "scope": "project"},
     "presenter":   {"emoji": "🎬", "desc": "Synthesis -> slide deck", "scope": "project"},
+    "architect":   {"emoji": "🏗️", "desc": "Software architecture design & technical planning", "scope": "global"},
+    "ask":         {"emoji": "❓", "desc": "Concise conversational assistant", "scope": "global"},
+    "debug":       {"emoji": "🪲", "desc": "Expert debugging & error analysis", "scope": "global"},
+    "orchestrator": {"emoji": "🪃", "desc": "Task orchestrator & pipeline coordination", "scope": "global"},
 }
 
 
@@ -281,11 +298,11 @@ class WorkspaceSession:
             # Core agent with dedicated Python class
             if name in PROJECT_AGENT_NAMES and self.project:
                 kwargs["project"] = self.project
-            if name in ("developer", "codex"):
+            if name in ("code", "codex"):
                 kwargs["workspace_path"] = self.cfg.get("_defaults", {}).get(
                     "workspace_path", "./workspace"
                 )
-            if name == "developer":
+            if name == "code":
                 kwargs["scm_config"] = self.cfg.get("scm", {})
             return agent_class(**kwargs)
 

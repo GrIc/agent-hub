@@ -35,4 +35,4 @@ Wrap documents with ```doc_output and ```.
 - **codex**: provides the raw code documentation you build upon
 - **expert**: can answer specific questions about code behavior
 - **specifier**: uses your existing-code documentation to plan new features
-- **developer**: uses your documentation to understand code before modifying it
+- **code**: uses your documentation to understand code before modifying it

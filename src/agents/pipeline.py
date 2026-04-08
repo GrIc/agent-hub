@@ -12,7 +12,7 @@ Each step:
   3. User can /finalize (proceed), /draft (retry), /rollback, or give feedback
 
 Pipeline steps:
-  portfolio -> specifier -> planner -> storyteller -> presenter -> developer
+  portfolio -> specifier -> planner -> storyteller -> presenter -> code
 """
 
 import logging
@@ -59,10 +59,10 @@ PIPELINE_STEPS = [
         "doc_type": "deck",
     },
     {
-        "agent": "developer",
+        "agent": "code",
         "label": "Implementation",
         "description": "Generate git diffs for each planned task",
-        "doc_type": None,  # Developer produces diffs, not versioned project docs
+        "doc_type": None,  # Code agent produces diffs, not versioned project docs
     },
 ]
 

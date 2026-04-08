@@ -230,7 +230,7 @@ python run.py --clean                               # Delete index + outputs
 | **expert** | global | Code Q&A, review, debug — primary dev assistant |
 | **codex** | global | Scan codebase → generate documentation for RAG |
 | **documenter** | global | Architecture docs & Mermaid diagrams |
-| **developer** | global | Generate `git diff` files for implementation |
+| **code** | global | Generate `git diff` files for implementation |
 | **portfolio** | project | Raw notes → requirements |
 | **specifier** | project | Requirements → technical specifications + architecture |
 | **planner** | project | Specs → roadmap with tasks and estimates |
@@ -240,7 +240,7 @@ python run.py --clean                               # Delete index + outputs
 ### Agent-specific commands
 
 **Codex**: `/scan [path]`, `/inventory`, `/tree`
-**Developer**: `/apply` (git apply), `/diff`, `/diffs`, `/show <file>`, `/tree`
+**Code**: `/apply` (git apply), `/diff`, `/diffs`, `/show <file>`, `/tree`
 **Documenter**: `/overview`, `/classes [module]`, `/sequence [flow]`, `/datamodel`, `/components`, `/reference [module]`
 
 ---
@@ -288,7 +288,7 @@ That's it. The agent appears in the CLI menu and web UI automatically. See [conf
 The pipeline automates the full project workflow:
 
 ```
-notes/ → portfolio → specifier → planner → storyteller → presenter → developer
+notes/ → portfolio → specifier → planner → storyteller → presenter → code
          (requirements) (specs)    (roadmap) (synthesis)    (deck)      (diffs)
 ```
 
@@ -342,11 +342,11 @@ Agent Hub exposes two complementary interfaces once deployed:
  │  Roo Code / Continue.dev │          │  Open WebUI   │
  └────────────┬─────────────┘          └──────┬────────┘
               │                               │
-    ┌─────────┴──────────┐                   │
-    │  MCP SSE (tools)   │  OpenAI API       │
-    │  /mcp/sse          │  /v1/chat/        │
-    │                    │  completions      │
-    └─────────┬──────────┘                   │
+    ┌─────────┴──────────┐                    │
+    │  MCP SSE (tools)   │  OpenAI API        │
+    │  /mcp/sse          │  /v1/chat/         │
+    │                    │  completions       │
+    └─────────┬──────────┘                    │
               │                               │
  ┌────────────┴───────────────────────────────┴────────┐
  │                  Agent Hub  :8080                   │
@@ -355,7 +355,7 @@ Agent Hub exposes two complementary interfaces once deployed:
  │   /mcp/sse             ──► expert_ask, search_rag…  │
  │   /api/ask             ──► Web UI internal          │
  ├─────────────────────────────────────────────────────┤
- │   ChromaDB (.vectordb)   │   KnowledgeGraph (.graphdb) │
+ │   ChromaDB (.vectordb) │  KnowledgeGraph (.graphdb) │
  └─────────────────────────────────────────────────────┘
 ```
 
@@ -652,7 +652,7 @@ agent-hub/
 │   │   ├── base.py           ← BaseAgent (prompt, RAG, reports)
 │   │   ├── project_agent.py  ← ProjectAgent (versioning, /load)
 │   │   ├── codex.py          ← Codebase scanner
-│   │   ├── developer.py      ← Git diff generator
+│   │   ├── code.py      ← Git diff generator
 │   │   ├── documenter.py     ← Architecture documentation
 │   │   ├── portfolio.py      ← Requirements from notes
 │   │   ├── specifier.py      ← Technical specifications

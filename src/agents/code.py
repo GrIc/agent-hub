@@ -1,5 +1,5 @@
 """
-Developer agent.
+Code agent.
 For each task, produces .diff files applicable via `git apply`.
 Workflow: analysis -> diff generation -> validation -> apply.
 """
@@ -19,8 +19,8 @@ OUTPUT_DIR = Path("output")
 DIFFS_DIR = OUTPUT_DIR / "diffs"
 
 
-class DeveloperAgent(BaseAgent):
-    name = "developer"
+class CodeAgent(BaseAgent):
+    name = "code"
 
     def __init__(self, *args, workspace_path: str = "./workspace",
                  scm_config: Optional[dict] = None, **kwargs):
@@ -185,7 +185,7 @@ class DeveloperAgent(BaseAgent):
     def _help_text(self) -> str:
         return (
             super()._help_text()
-            + "\nDeveloper commands:\n"
+            + "\nCode commands:\n"
             "  /apply          -- Apply pending diff via `git apply`\n"
             "  /diff           -- Redisplay pending diff\n"
             "  /diffs          -- List all saved diff files\n"
@@ -195,4 +195,4 @@ class DeveloperAgent(BaseAgent):
 
 
 # Backward compatibility alias
-TechAgent = DeveloperAgent
+TechAgent = CodeAgent

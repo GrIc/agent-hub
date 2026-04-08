@@ -31,7 +31,7 @@ from src.projects import list_projects, get_or_create_project, Project
 # Core agents (with dedicated Python classes for special commands)
 from src.agents.codex import CodexAgent
 from src.agents.documenter import DocumenterAgent
-from src.agents.developer import DeveloperAgent
+from src.agents.code import CodeAgent
 from src.agents.portfolio import PortfolioAgent
 from src.agents.specifier import SpecifierAgent
 from src.agents.planner import PlannerAgent
@@ -52,7 +52,7 @@ CORE_GLOBAL_AGENTS = {
     "expert":     {"class": None,             "emoji": "🧠", "desc": "Code Q&A (web only)"},
     "codex":      {"class": CodexAgent,       "emoji": "🔬", "desc": "Scan codebase, generate documentation for RAG"},
     "documenter": {"class": DocumenterAgent,  "emoji": "📐", "desc": "Architecture docs & diagrams of existing code"},
-    "developer":  {"class": DeveloperAgent,   "emoji": "🔧", "desc": "Implement tasks, modify code in workspace"},
+    "code":       {"class": CodeAgent,        "emoji": "🔧", "desc": "Implement tasks, modify code in workspace"},
 }
 
 CORE_PROJECT_AGENTS = {
@@ -272,9 +272,9 @@ def create_agent(name: str, cfg: dict, client: ResilientClient, store: VectorSto
 
     if name in PROJECT_AGENTS and project:
         kwargs["project"] = project
-    if name in ("developer", "codex"):
+    if name in ("code", "codex"):
         kwargs["workspace_path"] = cfg.get("_defaults", {}).get("workspace_path", "./workspace")
-    if name == "developer":
+    if name == "code":
         kwargs["scm_config"] = cfg.get("scm", {})
     if name == "codex":
         kwargs["scan_config"] = cfg.get("scanning", {})
@@ -526,7 +526,7 @@ def main():
         else:
             show_agent_menu(project_name)
             try:
-                choice = Prompt.ask("\n[bold]Choose an agent[/bold] (number or name)", default="developer")
+                choice = Prompt.ask("\n[bold]Choose an agent[/bold] (number or name)", default="code")
             except (KeyboardInterrupt, EOFError):
                 console.print("\n[dim]Goodbye![/dim]")
                 break

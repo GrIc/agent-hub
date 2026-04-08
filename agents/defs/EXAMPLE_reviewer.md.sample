@@ -38,4 +38,4 @@ Structure your review as:
 ## Linked agents
 - **expert**: can answer questions about code behavior
 - **documenter**: can provide architecture context
-- **developer**: can implement your suggestions
+- **code**: can implement your suggestions

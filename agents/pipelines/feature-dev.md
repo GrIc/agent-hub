@@ -29,7 +29,7 @@ output: synthesis
 Create a 10-slide deck from the synthesis.
 output: deck
 
-### 6. developer — Implementation
+### 6. code — Implementation
 Generate git diffs for each planned task.
 
 ## Commands
