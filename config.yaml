@@ -34,28 +34,32 @@ agents:
   expert:
     model: code
     temperature: 0.3
-    extra_params:
-      reasoning_effort: "high"
   codex:
     model: heavy
     temperature: 0.3
+    extra_params:
+      reasoning_effort: "high"
   documenter:
     model: heavy
     temperature: 0.3
-  code:
+  developer:
     model: code
     temperature: 0.2
   portfolio:
     model: heavy
     temperature: 0.4
+    extra_params:
+      frequency_penalty: 0.3
   specifier:
     model: heavy
-    temperature: 0.2
+    temperature: 0.3
+    extra_params:
+      top_p: 0.9
   planner:
     model: reasoning
     temperature: 0.0
     # extra_params:
-    #   reasoning_effort: "high"     # Provider-specific (Mistral, etc.)
+    reasoning_effort: "high"     # Provider-specific (Mistral, etc.)
   storyteller:
     model: heavy
     temperature: 0.3
@@ -155,6 +159,37 @@ graph:
   extraction_model: heavy              # Model alias for triplet extraction
   extraction_temperature: 0.1          # Low temperature for factual extraction
 
+# ── Knowledge Graph Schema ──────────────────────────────────────
+# Defines allowed node types, relation types, and allowed relations
+# between specific node types. Used by build_graph.py for validation.
+
+knowledge_graph:
+  node_types:
+    - Module
+    - Class
+    - Interface
+    - Service
+    - API
+    - Config
+    - Test
+  relation_types:
+    - depends_on
+    - contains
+    - calls
+    - implements
+    - extends
+    - imports
+    - tested_by
+    - configures
+    - exposes
+  allowed_relations:
+    Module: [depends_on, contains, imports]
+    Class: [calls, implements, extends, imports]
+    Service: [depends_on, calls, exposes]
+    API: [calls, depends_on]
+    Config: [configures]
+    Test: [tested_by]
+
 # ── RAG Configuration ──────────────────────────────────────
 # The RAG indexes files from context/, workspace/, and reports/ directories.
 # - extensions: positive list of file types to index (others are skipped)
@@ -195,6 +230,13 @@ rag:
     - .html
     - .css
     - .scss
+    - .mql
+    - .tcl
+    - .pptx
+    - .docx
+    - .pdf
+    - .mql
+    - .tcl
     - .sh
     - .properties
   skip_dirs:                           # Directories to ignore during ingestion
@@ -223,16 +265,16 @@ rag:
 # This context is injected into all agent prompts automatically.
 # Leave empty ({}) if your project doesn't use a custom DSL.
 
-custom_dsl: {}
-  # Example:
-  # name: "HQL"
-  # file_extension: ".hql"
-  # description: |
-  #   HQL is the Hibernate Query Language for database queries.
-  #   Key concepts: Entity, Session, Criteria, HQL query, Named query.
-  # few_shot_examples:
-  #   - input: "Find all users"
-  #     output: "FROM User u WHERE u.active = true ORDER BY u.name"
+custom_dsl:
+  name: "MQL"
+  file_extension: ".mql"
+  description: |
+    MQL is the query language for ENOVIA / 3DEXPERIENCE.
+    Key concepts: Business Object (TYPE, NAME, REVISION), Type, Relationship, Attribute, Policy, Vault, JPO, TCL.
+    Common commands: print bus, temp query bus, expand bus, add bus, modify bus, connect bus, execute program.
+  few_shot_examples:
+    - input: "Find all Parts"
+      output: "temp query bus Part * * select name revision description dump |"
 
 # ── Custom SCM (optional) ──────────────────────────────────
 # Used by the code agent to unlock/lock files before modification.
@@ -283,6 +325,15 @@ synthesis:
         - Spec.js
         - test_
         - tests_
+        - /.tst/
+        - /.tst_/
+        - /_tst_/
+        - /test/
+        - /tests/
+        - Test.java
+        - Spec.js
+        - .test.
+        - .spec.
     database:
       label: "Database"
       description: "SQL scripts, schema definitions, migrations, data model, ORM"
@@ -297,6 +348,11 @@ synthesis:
         - sql_
         - _sql_
         - migration_
+        - .mql
+        - /reffiles/
+        - /MQLFamilies/
+        - mql_
+        - _mql_
     frontend:
       label: "Frontend"
       description: "JavaScript, TypeScript, HTML, CSS, web components, UI"
@@ -321,6 +377,29 @@ synthesis:
         - .html_
         - .css_
         - .scss_
+        - .mweb/
+        - .mweb_
+        - _mweb_
+        - /js/
+        - /ts/
+        - /css/
+        - /html/
+        - /webapp/
+        - .js_
+        - .ts_
+        - .jsx_
+        - .tsx_
+        - .vue_
+        - .html_
+        - .css_
+        - .scss_
+        - .mweb/
+        - .mweb_
+        - _mweb_
+        - /js/
+        - /ts/
+        - /css/
+        - /html/
     backend:
       label: "Backend"
       description: "Server-side code, business logic, API, services"
@@ -344,6 +423,13 @@ synthesis:
         - /com/
         - /org/
         - /net/
+        - .java
+        - .mj/
+        - .mj_
+        - _mj_
+        - /com/
+        - /org/
+        - /java/
     native:
       label: "Native Apps"
       description: "C/C++, Rust, Swift, Kotlin — desktop and mobile native code"
