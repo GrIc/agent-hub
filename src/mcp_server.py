@@ -843,12 +843,14 @@ def mount_mcp_sse(app, cfg: dict):
         )
 
     # Mount as sub-application
+    # For SSE endpoint, we need to ensure the Content-Type header is set to text/event-stream
+    # The SseServerTransport handles the SSE protocol, but we ensure proper media type
     app.mount(
         "/mcp",
         Mount(
             "/mcp",
             routes=[
-                Route("/sse", endpoint=handle_sse),
+                Route("/sse", endpoint=handle_sse, methods=["GET"], media_type="text/event-stream"),
                 Route("/messages", endpoint=handle_messages, methods=["POST"]),
             ],
         ),
