@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "agent-hub": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "src.mcp_server"],
+      "cwd": "/path/to/agent-hub",
+      "env": {
+        "PYTHONPATH": "/path/to/agent-hub"
+      }
+    }
+  }
+}

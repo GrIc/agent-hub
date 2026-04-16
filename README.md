@@ -21,7 +21,7 @@ Uses **ChromaDB** for vector storage with optional cross-encoder reranking.
 - [Custom Agents](#custom-agents)
 - [Project Pipeline](#project-pipeline)
 - [Time-Travel Documentation](#time-travel-documentation)
-- [IDE Integration](#ide-integration)
+- [IDE Integration](#ide-integration) (Roo Code, Continue.dev, Claude Code)
 - [Docker Deployment](#docker-deployment)
 - [CI/CD (GitLab)](#cicd-gitlab)
 - [Project Structure](#project-structure)
@@ -416,10 +416,10 @@ Add this to your Roo Code MCP config (`.roo/mcp.json` or via Settings → MCP Se
 
 Roo Code can now call Agent Hub tools during agentic tasks:
 - `expert_ask` — RAG-powered code Q&A
-- `search_rag` — Search the index directly
-- `workspace_tree` — Browse the workspace
-- `file_edit` — Apply diffs to files
-- `deliverables_list` / `deliverables_apply` — Project deliverables
+- `search_rag` — Search the vector index directly
+- `search_graph` — Entity relationships and dependency queries
+- `read_file` / `edit_file` — Browse and edit workspace files
+- `list_deliverables` / `read_deliverable` / `apply_deliverable` — Project deliverables
 
 ---
 
@@ -474,17 +474,76 @@ Continue.dev works in VS Code, IntelliJ, PyCharm, WebStorm, and all JetBrains ID
 
 ---
 
+### Setup: Claude Code
+
+Claude Code (the Anthropic CLI) connects to Agent Hub via MCP in two modes.
+
+#### Mode SSE (Agent Hub running as a server)
+
+Add this to your `~/.claude/settings.json` (global) or `.claude/settings.json` (project):
+
+```json
+{
+  "mcpServers": {
+    "agent-hub": {
+      "type": "sse",
+      "url": "http://localhost:8080/mcp/sse"
+    }
+  }
+}
+```
+
+Prerequisites: Agent Hub must be running (`docker compose up` or `python -m web.server`).
+
+#### Mode stdio (Agent Hub spawned as a subprocess)
+
+Claude Code spawns `python -m src.mcp_server` directly. No web server needed.
+
+Add this to your `~/.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "agent-hub": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "src.mcp_server"],
+      "cwd": "/path/to/agent-hub",
+      "env": {
+        "PYTHONPATH": "/path/to/agent-hub"
+      }
+    }
+  }
+}
+```
+
+A ready-to-use config file is provided at the root of this repo: copy `claude-code-mcp.json` into `~/.claude/settings.json` (or merge the `mcpServers` block into your existing settings) and adjust the `cwd` path.
+
+#### Using Agent Hub tools in Claude Code
+
+Once configured, Claude Code can call Agent Hub tools in any agentic session:
+
+```
+> Use expert_ask to explain how the authentication module works
+> Search the RAG index for database migration patterns
+> What does search_graph say about dependencies of UserService?
+> List deliverables for project my-feature and apply the latest spec
+```
+
+---
+
 ### Available MCP tools
 
 | Tool | Description |
 |------|-------------|
 | `expert_ask` | RAG-powered code Q&A with full hybrid search |
-| `search_rag` | Search the vector index directly |
-| `workspace_tree` | Browse the workspace file tree |
-| `file_edit` | Apply git diffs to workspace files |
-| `deliverables_list` | List project deliverables (specs, roadmaps…) |
-| `deliverables_apply` | Apply a deliverable (dry-run or live) |
-| `ingest_files` | Index additional files into RAG on the fly |
+| `search_rag` | Search the vector index directly (returns raw chunks + scores) |
+| `search_graph` | Query the knowledge graph for entity relationships and dependencies |
+| `read_file` | Read a file from the workspace |
+| `edit_file` | Write/overwrite a file in the workspace |
+| `list_deliverables` | List project deliverables (specs, roadmaps…) |
+| `read_deliverable` | Read a specific deliverable's content |
+| `apply_deliverable` | Apply a deliverable automatically (dry-run or live) |
 
 ---
 
@@ -678,6 +737,7 @@ agent-hub/
 ├── docker-compose.ide.yml    ← Open WebUI service (optional)
 ├── continue-sse.yaml         ← Continue.dev / Roo Code MCP config (copy into your project)
 ├── continue-stdio.yaml       ← Continue.dev MCP config (local dev, no Docker)
+├── claude-code-mcp.json      ← Claude Code MCP config (merge into ~/.claude/settings.json)
 │
 └── scripts/
     ├── deploy.sh             ← Docker management helper
