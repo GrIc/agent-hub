@@ -11,10 +11,18 @@ Each chunk is tagged with a `doc_level` metadata for hierarchical RAG:
   - code: Raw source code from workspace
   - context: Manual docs (architecture/, code-samples/)
   - report: Agent reports
+
+Features:
+  - Semantic breadcrumbs for better embedding context
+  - Rich metadata (block, module, content_type)
+  - CRLF normalization
+  - Incremental ingestion with file hashing
 """
 
-import os
+import hashlib
+import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -102,11 +110,11 @@ PARSERS = {
 def detect_doc_level(relative_path: str, directory_label: str = "") -> str:
     """
     Detect the documentation level of a file for hierarchical RAG.
-
+    
     Args:
         relative_path: Path relative to the ingestion directory
         directory_label: Label passed by the caller ("context", "workspace", "reports")
-
+    
     Returns:
         One of: "L0", "L1", "L2", "L3", "code", "context", "report"
     """
@@ -139,49 +147,99 @@ def detect_doc_level(relative_path: str, directory_label: str = "") -> str:
     return "context"
 
 
-# -- Chunking ---
+# -- Incremental ingestion state ---
 
-def chunk_text(
+def _load_hashes(ingest_dir: Path) -> dict:
+    """Load file hashes from sidecar JSON file."""
+    hash_file = ingest_dir / ".ingest_hashes.json"
+    if hash_file.exists():
+        try:
+            return json.loads(hash_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def _save_hashes(ingest_dir: Path, hashes: dict) -> None:
+    """Save file hashes to sidecar JSON file."""
+    hash_file = ingest_dir / ".ingest_hashes.json"
+    hash_file.write_text(
+        json.dumps(hashes, indent=2, ensure_ascii=False),
+        encoding="utf-8"
+    )
+
+
+def _compute_file_hash(content: str) -> str:
+    """Compute MD5 hash of normalized content."""
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+    return hashlib.md5(normalized.encode("utf-8")).hexdigest()
+
+
+# -- Chunking with semantic breadcrumbs ---
+
+def chunk_text_with_breadcrumb(
     text: str,
     chunk_size: int = 1500,
     overlap: int = 200,
     source: str = "",
     doc_level: str = "context",
+    block: str = "",
+    module_name: str = "",
+    content_type: str = "",
 ) -> list[dict]:
     """
-    Split text into chunks with metadata.
-
-    Each chunk dict contains: text, source, chunk_index, doc_level.
+    Split text into chunks with metadata including semantic breadcrumbs.
+    
+    Each chunk dict contains: text, source, chunk_index, doc_level, and rich metadata.
+    
+    Args:
+        text: The text content to chunk
+        chunk_size: Target chunk size in characters
+        overlap: Overlap between chunks
+        source: Source file path
+        doc_level: Documentation level (L0, L1, L2, L3, code, context, report)
+        block: Architectural block (backend, frontend, database, etc.)
+        module_name: Module name
+        content_type: Type of content (code, codex_doc, synthesis, config, test)
+    
+    Returns:
+        List of chunk dicts with rich metadata
     """
     if not text.strip():
         return []
 
+    # Normalize line endings
+    normalized_text = text.replace("\r\n", "\n").replace("\r", "\n")
+    
+    # Add semantic breadcrumb context line
+    breadcrumb = (
+        f"Context: Block={block} | Module={module_name} | Level={doc_level} | Type={content_type}\n\n"
+    )
+    normalized_text = breadcrumb + normalized_text
+
     chunks = []
     start = 0
     idx = 0
-    while start < len(text):
+    while start < len(normalized_text):
         end = start + chunk_size
-        chunk = text[start:end]
+        chunk = normalized_text[start:end]
 
-        if end < len(text):
+        if end < len(normalized_text):
             last_nl = chunk.rfind("\n")
             if last_nl > chunk_size // 2:
                 end = start + last_nl + 1
-                chunk = text[start:end]
+                chunk = normalized_text[start:end]
 
-        #chunks.append({
-        #    "text": chunk.strip(),
-        #    "source": source,
-        #    "chunk_index": idx,
-        #    "doc_level": doc_level,
-        #})
-        clean_chunk = chunk.strip().replace('\x00', '').replace('\0', '')  # Remove null chars
+        clean_chunk = chunk.strip().replace('\x00', '').replace('\0', '')
         if clean_chunk:
             chunks.append({
                 "text": clean_chunk,
                 "source": str(source) if source is not None else "unknown",
                 "chunk_index": int(idx),
                 "doc_level": str(doc_level) if doc_level is not None else "unknown",
+                "block": block,
+                "module": module_name,
+                "content_type": content_type,
             })
         start = end - overlap
         idx += 1
@@ -230,6 +288,8 @@ def ingest_directory(
     label: str = "",
     skip_dirs: Optional[set[str]] = None,
     max_file_size: Optional[int] = None,
+    force: bool = False,
+    ingest_dir: Optional[Path] = None,
 ) -> list[dict]:
     """
     Recursively read all matching files, parse, and chunk.
@@ -240,9 +300,13 @@ def ingest_directory(
         chunk_size: Chunk size in chars
         chunk_overlap: Overlap between chunks
         label: Directory label for doc_level detection ("context", "workspace", "reports")
+        skip_dirs: Directories to skip
+        max_file_size: Maximum file size
+        force: Force re-ingestion even if file hasn't changed
+        ingest_dir: Directory for storing hash state (defaults to directory)
 
     Returns:
-        List of {text, source, chunk_index, doc_level} dicts.
+        List of {text, source, chunk_index, doc_level, block, module, content_type} dicts.
     """
     directory = Path(directory)
     if not directory.exists():
@@ -254,12 +318,20 @@ def ingest_directory(
     allowed = set(extensions) if extensions else set()
     all_chunks = []
     skipped = 0
+    processed = 0
+
+    # Determine ingest state directory
+    if ingest_dir is None:
+        ingest_dir = directory
+    
+    state = _load_hashes(ingest_dir)
 
     all_paths = []
     for dirpath, dirnames, filenames in os.walk(directory, followlinks=True):
         dirnames[:] = [d for d in dirnames if d not in _skip_dirs and not d.startswith(".")]
         for fname in filenames:
             all_paths.append(Path(dirpath) / fname)
+    
     for path in sorted(all_paths):
         if not path.is_file():
             continue
@@ -269,7 +341,21 @@ def ingest_directory(
             skipped += 1
             continue
 
+        # Check if file has changed
+        try:
+            current_content = path.read_text(encoding="utf-8", errors="replace")
+            current_hash = _compute_file_hash(current_content)
+            file_key = str(path.relative_to(ingest_dir))
+            
+            if not force and state.get(file_key) == current_hash:
+                logger.debug(f"Skipping unchanged file: {path}")
+                continue
+        except Exception as e:
+            logger.warning(f"Cannot read {path} for hashing: {e}")
+            continue
+
         logger.info(f"Ingesting: {path}")
+        processed += 1
 
         parser = PARSERS.get(path.suffix.lower(), _read_text)
         text = parser(path)
@@ -282,15 +368,61 @@ def ingest_directory(
         text_with_header = header + text
 
         doc_level = detect_doc_level(relative_str, label)
-
-        chunks = chunk_text(
+        
+        # Extract block and module from path for semantic breadcrumbs
+        block = "other"
+        module_name = ""
+        content_type = ""
+        
+        # Determine block based on directory structure
+        rel_path = str(relative)
+        if "backend" in rel_path or rel_path.endswith(".java") or rel_path.endswith(".py"):
+            block = "backend"
+        elif "frontend" in rel_path or rel_path.endswith(".js") or rel_path.endswith(".ts"):
+            block = "frontend"
+        elif "database" in rel_path or rel_path.endswith(".sql"):
+            block = "database"
+        elif "test" in rel_path or "spec" in rel_path:
+            block = "tests"
+        elif "infra" in rel_path or "deploy" in rel_path:
+            block = "infrastructure"
+        
+        # Determine content type based on file
+        if label == "workspace":
+            content_type = "code"
+        elif "codex_" in relative_str:
+            content_type = "codex_doc"
+        elif "synthesis" in rel_path:
+            content_type = "synthesis"
+        elif "config" in rel_path or rel_path.endswith((".yaml", ".yml", ".json")):
+            content_type = "config"
+        elif "test" in rel_path or "spec" in rel_path:
+            content_type = "test"
+        else:
+            content_type = "context"
+        
+        # Extract module name from path
+        if len(relative.parts) > 0:
+            module_name = relative.parts[0]
+        
+        chunks = chunk_text_with_breadcrumb(
             text_with_header,
             chunk_size=chunk_size,
             overlap=chunk_overlap,
             source=relative_str,
             doc_level=doc_level,
+            block=block,
+            module_name=module_name,
+            content_type=content_type,
         )
         all_chunks.extend(chunks)
+        
+        # Update hash state
+        state[file_key] = current_hash
+
+    # Save updated hash state
+    if processed > 0:
+        _save_hashes(ingest_dir, state)
 
     # Log level distribution
     level_counts = {}
@@ -300,7 +432,7 @@ def ingest_directory(
 
     logger.info(
         f"Ingested {len(all_chunks)} chunks from {directory} "
-        f"(skipped {skipped} binary/asset files) "
+        f"(processed {processed} files, skipped {skipped} binary/asset files) "
         f"levels: {level_counts}"
     )
     return all_chunks

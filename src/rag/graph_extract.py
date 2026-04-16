@@ -31,6 +31,9 @@ Entity types (use ONLY these): {entity_types}
 
 Relation types (use ONLY these): {relation_types}
 
+Allowed relations by entity type:
+{allowed_relations_schema}
+
 Rules:
 - Extract ONLY relationships explicitly stated or directly visible in the text.
   Do NOT infer, guess, or extrapolate relationships.
@@ -43,6 +46,7 @@ Rules:
   Class calls Function, Class implements Interface, File imports File.
 - Skip trivial relationships (e.g., a class containing its own constructor).
 - Produce 5-40 nodes and 10-60 edges for a typical document. Less for short docs.
+- NEVER invent nodes or relations not present in the text.
 """
 
 RETRY_NUDGE = (
@@ -66,6 +70,7 @@ class TripletExtractor:
         self.client = client
         self.model = model
         self.temperature = temperature
+        # Default types - will be overridden by config if provided
         self.entity_types = entity_types or [
             "Module", "Class", "Interface", "Function", "File", "Package",
             "Layer", "Service", "API", "Database", "Config", "Library", "Pattern",
@@ -75,6 +80,8 @@ class TripletExtractor:
             "uses", "exposes", "configures", "reads_from", "writes_to",
             "inherits", "instantiates", "tested_by",
         ]
+        # Store allowed relations for validation
+        self.allowed_relations: dict[str, list[str]] = {}
 
     def extract_from_doc(
         self,
@@ -93,9 +100,20 @@ class TripletExtractor:
         # Truncate very long docs
         text = doc_text[:30_000]
 
+        # Format allowed relations for prompt
+        allowed_relations_schema = ""
+        if self.allowed_relations:
+            lines = []
+            for node_type, rels in self.allowed_relations.items():
+                lines.append(f"  {node_type}: {', '.join(rels)}")
+            allowed_relations_schema = "\n".join(lines)
+        else:
+            allowed_relations_schema = "  (No restrictions - use any valid relation)"
+
         system = EXTRACTION_SYSTEM_PROMPT.format(
             entity_types=", ".join(self.entity_types),
             relation_types=", ".join(self.relation_types),
+            allowed_relations_schema=allowed_relations_schema,
         )
 
         raw = self._call_llm(system, text)

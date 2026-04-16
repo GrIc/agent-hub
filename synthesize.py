@@ -52,6 +52,9 @@ from rich.console import Console
 from rich.logging import RichHandler
 from rich.table import Table
 
+# Import grounding instruction for anti-hallucination
+from src.rag.grounding import GROUNDING_INSTRUCTION, validate_doc
+
 console = Console()
 logger  = logging.getLogger(__name__)
 
@@ -434,25 +437,93 @@ class Synthesizer:
         self.blocks = blocks
         self.force  = force
         self.stats  = {"llm_calls": 0, "skipped": 0, "failed": 0, "condensed": 0}
+        logger.info("SynthesisEngine initialized with grounding enabled")
 
     # -- LLM + IO --
 
     def _llm_call(self, system: str, content: str, max_tokens: int = 4096) -> str:
+        """
+        Call LLM with grounding instruction and temperature 0.1.
+        
+        Injects GROUNDING_INSTRUCTION into system prompt to prevent hallucinations.
+        Sets temperature to 0.1 for deterministic synthesis output.
+        """
         if len(content) > 30000:
             content = content[:30000] + "\n\n[... truncated]"
+        
+        # Inject grounding instruction into system prompt
+        grounded_system = f"""{system}
+
+{GROUNDING_INSTRUCTION}"""
+        
         self.stats["llm_calls"] += 1
+        logger.debug(f"LLM call #{self.stats['llm_calls']}: system={system[:100]}... content={content[:100]}...")
+        
         result = self.client.chat(
             messages=[
-                {"role": "system", "content": system},
+                {"role": "system", "content": grounded_system},
                 {"role": "user",   "content": content},
             ],
             model=self.model,
-            temperature=0.2,
+            temperature=0.1,  # Set to 0.1 as per Phase 2 requirements
             max_tokens=max_tokens,
             complete=True,
         )
         time.sleep(2)
         return result
+
+    def _validate_and_clean(self, output: str, input_text: str) -> str:
+        """
+        Strip hallucinated sentences from LLM output using grounding validation.
+        
+        Args:
+            output: The generated text from LLM
+            input_text: The input text used for the LLM call
+            
+        Returns:
+            Cleaned output with hallucinated sentences removed
+            
+        Logs warnings for any hallucinations detected and removed.
+        """
+        # Extract identifiers from input text for validation
+        try:
+            from src.rag.grounding import extract_identifiers
+            known_ids = extract_identifiers(input_text)
+            logger.debug(f"Extracted {len(known_ids)} identifiers from input for validation")
+        except Exception as e:
+            logger.warning(f"Failed to extract identifiers for validation: {e}")
+            known_ids = set()
+        
+        # Validate output for hallucinations
+        hallucinations = validate_doc(output, known_ids)
+        
+        if hallucinations:
+            logger.warning(f"Detected {len(hallucinations)} hallucinated terms in output: {hallucinations}")
+            
+            # Remove sentences containing hallucinated terms
+            # Split output into sentences and filter
+            sentences = re.split(r'(?<=[.!?])\s+', output)
+            cleaned_sentences = []
+            
+            for sentence in sentences:
+                # Check if sentence contains any hallucination
+                has_hallucination = False
+                for hallucination in hallucinations:
+                    # Check for exact match or as a word
+                    if re.search(rf'\b{re.escape(hallucination)}\b', sentence):
+                        has_hallucination = True
+                        logger.debug(f"Removing sentence with hallucination '{hallucination}': {sentence[:100]}...")
+                        break
+                
+                if not has_hallucination:
+                    cleaned_sentences.append(sentence)
+            
+            cleaned_output = ' '.join(cleaned_sentences)
+            logger.info(f"Cleaned output: removed {len(sentences) - len(cleaned_sentences)} sentences containing hallucinations")
+            return cleaned_output
+        
+        logger.debug("No hallucinations detected in output")
+        return output
 
     def _condense(self, text: str, source_name: str) -> str:
         target_words = CONDENSE_TARGET // 5
@@ -462,15 +533,17 @@ class Synthesizer:
             end=" ",
         )
         try:
-            condensed = self._llm_call(
+            raw_output = self._llm_call(
                 system=CONDENSE_PROMPT.format(target_words=target_words),
                 content=text,
                 max_tokens=2048,
             )
+            # Validate and clean the output
+            cleaned_output = self._validate_and_clean(raw_output, text)
             console.print("[dim]done[/dim]")
-            logger.info(f"[Condense] {source_name}: {len(text)} -> {len(condensed)} chars")
+            logger.info(f"[Condense] {source_name}: {len(text)} -> {len(cleaned_output)} chars")
             self.stats["condensed"] += 1
-            return condensed
+            return cleaned_output
         except Exception as e:
             logger.warning(f"[Condense] Failed for {source_name}: {e} -- truncating")
             return text[:CONDENSE_TARGET] + "\n[... truncated]"
@@ -577,11 +650,13 @@ class Synthesizer:
                 end=" ",
             )
             try:
-                result_text = self._llm_call(prompt, combined, max_tokens=2048)
+                raw_output = self._llm_call(prompt, combined, max_tokens=2048)
+                # Validate and clean the output to remove hallucinations
+                cleaned_output = self._validate_and_clean(raw_output, combined)
                 title = f"# {block_label} -- {module_name}\n\n"
                 self._save(
                     filepath,
-                    title + result_text,
+                    title + cleaned_output,
                     f"Level {depth_label} | {block_label} | Module: {module_name}"
                     f" | Sources: {len(doc_paths)}",
                 )
@@ -637,11 +712,13 @@ class Synthesizer:
             end=" ",
         )
         try:
-            result_text = self._llm_call(prompt, combined, max_tokens=2048)
+            raw_output = self._llm_call(prompt, combined, max_tokens=2048)
+            # Validate and clean the output to remove hallucinations
+            cleaned_output = self._validate_and_clean(raw_output, combined)
             title = f"# {block_label} -- {module_name}\n\n"
             self._save(
                 filepath,
-                title + result_text,
+                title + cleaned_output,
                 f"Level {depth} | {block_label} | Module: {module_name}"
                 f" | Children: {n}",
             )
@@ -745,11 +822,13 @@ class Synthesizer:
                 end=" ",
             )
             try:
-                result = self._llm_call(prompt, combined, max_tokens=3072)
+                raw_output = self._llm_call(prompt, combined, max_tokens=3072)
+                # Validate and clean the output to remove hallucinations
+                cleaned_output = self._validate_and_clean(raw_output, combined)
                 title  = f"# {block_label} -- Overview\n\n{block_desc}\n\n"
                 self._save(
                     filepath,
-                    title + result,
+                    title + cleaned_output,
                     f"Level 1 | {block_label} | Modules: {len(top_files)}",
                 )
                 level1_files[block_name] = filepath
@@ -790,10 +869,12 @@ class Synthesizer:
             end=" ",
         )
         try:
-            result = self._llm_call(LEVEL0_PROMPT, combined, max_tokens=4096)
+            raw_output = self._llm_call(LEVEL0_PROMPT, combined, max_tokens=4096)
+            # Validate and clean the output to remove hallucinations
+            cleaned_output = self._validate_and_clean(raw_output, combined)
             self._save(
                 filepath,
-                "# Architecture Overview\n\n" + result,
+                "# Architecture Overview\n\n" + cleaned_output,
                 f"Level 0 | Layers: {', '.join(level1_files.keys())}",
             )
             console.print("[green]OK[/green]")

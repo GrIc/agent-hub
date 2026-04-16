@@ -10,6 +10,7 @@ Supports hierarchical search via doc_level metadata:
   - report: Agent reports
 
 Supports cross-encoder reranking when a rerank model is configured.
+Supports metadata filtering on doc_level, module, and content_type.
 """
 
 import hashlib
@@ -67,7 +68,8 @@ class VectorStore:
     def add_chunks(self, chunks: list[dict], batch_size: int = 8) -> int:
         """
         Embed and store chunks. Deduplicates by content hash.
-        Each chunk dict should have: text, source, chunk_index, doc_level.
+        Each chunk dict should have: text, source, chunk_index, doc_level,
+        block, module, content_type.
         """
         if not chunks:
             return 0
@@ -105,8 +107,11 @@ class VectorStore:
             metadatas = [
                 {
                     "source": c[1].get("source", ""),
-                    "chunk_index": c[1].get("chunk_index", 0),
                     "doc_level": c[1].get("doc_level", "context"),
+                    "block": c[1].get("block", ""),
+                    "module": c[1].get("module", ""),
+                    "content_type": c[1].get("content_type", ""),
+                    "chunk_index": c[1].get("chunk_index", 0),
                 }
                 for c in batch
             ]
@@ -172,14 +177,18 @@ class VectorStore:
         query: str,
         top_k: int = 8,
         doc_levels: Optional[list[str]] = None,
+        module: Optional[str] = None,
+        content_type: Optional[str] = None,
     ) -> list[dict]:
         """
-        Search for relevant chunks.
+        Search for relevant chunks with optional metadata filtering.
 
         Args:
             query: Search query
             top_k: Number of results
             doc_levels: Optional filter on doc_level metadata (e.g., ["L0", "L1", "L2"])
+            module: Optional filter on module metadata
+            content_type: Optional filter on content_type metadata
 
         Returns:
             List of {text, source, score, doc_level}.
@@ -193,19 +202,26 @@ class VectorStore:
             logger.error(f"Failed to embed query: {e}")
             return []
 
-        where_filter = None
+        where_filter = {}
         if doc_levels:
-            where_filter = {"doc_level": {"$in": doc_levels}}
+            where_filter["doc_level"] = {"$in": doc_levels}
+        if module:
+            where_filter["module"] = module
+        if content_type:
+            where_filter["content_type"] = content_type
+        
+        # Only pass where_filter if it has conditions
+        where_clause = where_filter if where_filter else None
 
         try:
             results = self.collection.query(
                 query_embeddings=[query_embedding],
                 n_results=min(top_k, self.collection.count()),
                 include=["documents", "metadatas", "distances"],
-                where=where_filter,
+                where=where_clause,
             )
         except Exception as e:
-            # Fallback: if filter fails (e.g., old index without doc_level), search without filter
+            # Fallback: if filter fails (e.g., old index without metadata), search without filter
             logger.warning(f"Filtered search failed ({e}), falling back to unfiltered search")
             results = self.collection.query(
                 query_embeddings=[query_embedding],
@@ -235,14 +251,36 @@ class VectorStore:
         retrieve_k: int = 15,
         final_k: int = 8,
         doc_levels: Optional[list[str]] = None,
+        module: Optional[str] = None,
+        content_type: Optional[str] = None,
     ) -> list[dict]:
         """
         Retrieve candidates via embedding, then rerank with cross-encoder.
 
         If no rerank model is configured, falls back to embedding-only results.
+        
+        Args:
+            query: Search query
+            retrieve_k: Number of candidates to retrieve for reranking (capped at 10)
+            final_k: Number of final results to return
+            doc_levels: Optional filter on doc_level metadata
+            module: Optional filter on module metadata
+            content_type: Optional filter on content_type metadata
+
+        Returns:
+            List of reranked results with scores.
         """
+        # Cap retrieve_k at 10 documents for reranker
+        retrieve_k = min(retrieve_k, 10)
+        
         # Over-retrieve candidates for reranking
-        candidates = self.search(query, top_k=retrieve_k, doc_levels=doc_levels)
+        candidates = self.search(
+            query,
+            top_k=retrieve_k,
+            doc_levels=doc_levels,
+            module=module,
+            content_type=content_type,
+        )
 
         if not candidates or not self.rerank_model:
             return candidates[:final_k]
@@ -271,15 +309,32 @@ class VectorStore:
             logger.warning(f"Reranking failed ({e}), using embedding scores")
             return candidates[:final_k]
 
-    def search_hierarchical(self, query: str, top_k: int = 8) -> list[dict]:
+    def search_hierarchical(
+        self,
+        query: str,
+        top_k: int = 8,
+        doc_levels: Optional[list[str]] = None,
+        module: Optional[str] = None,
+        content_type: Optional[str] = None,
+    ) -> list[dict]:
         """
-        Two-pass hierarchical search with optional cross-encoder reranking.
+        Two-pass hierarchical search with optional cross-encoder reranking and metadata filtering.
 
         1. First pass: synthesis docs (all LN levels except L3) for architectural context
         2. Second pass: detailed docs (L3, code, context) for implementation details
         3. Merge and deduplicate by source, sorted by (rerank) score
 
         Falls back to flat search if the index has no doc_level metadata.
+        
+        Args:
+            query: Search query
+            top_k: Number of results to return
+            doc_levels: Optional filter on doc_level metadata
+            module: Optional filter on module metadata
+            content_type: Optional filter on content_type metadata
+
+        Returns:
+            List of merged and deduplicated results.
         """
         half_k = max(top_k // 2, 2)
         retrieve_k = max(top_k * 2, 15)  # Over-retrieve for reranking
@@ -289,14 +344,22 @@ class VectorStore:
 
         # Pass 1: high-level synthesis (with reranking)
         synthesis_results = self.search_with_rerank(
-            query, retrieve_k=retrieve_k, final_k=half_k,
-            doc_levels=synthesis_levels,
+            query,
+            retrieve_k=retrieve_k,
+            final_k=half_k,
+            doc_levels=synthesis_levels if doc_levels is None else doc_levels,
+            module=module,
+            content_type=content_type,
         )
 
         # Pass 2: detailed docs (with reranking)
         detail_results = self.search_with_rerank(
-            query, retrieve_k=retrieve_k, final_k=half_k,
-            doc_levels=LEVELS_DETAIL,
+            query,
+            retrieve_k=retrieve_k,
+            final_k=half_k,
+            doc_levels=LEVELS_DETAIL if doc_levels is None else doc_levels,
+            module=module,
+            content_type=content_type,
         )
 
         # If both empty, fall back to flat search (legacy index without doc_level)
@@ -322,15 +385,40 @@ class VectorStore:
         )
         return merged[:top_k]
 
-    def search_hybrid(self, query: str, top_k: int = 8, **kwargs) -> list[dict]:
+    def search_hybrid(
+        self,
+        query: str,
+        top_k: int = 8,
+        doc_levels: Optional[list[str]] = None,
+        module: Optional[str] = None,
+        content_type: Optional[str] = None,
+        **kwargs,
+    ) -> list[dict]:
         """Hybrid search: vector + knowledge graph.
 
         If a KnowledgeGraph is attached (self.graph), combines vector results
         with graph traversal for structural context. Otherwise falls back to
         search_hierarchical().
+        
+        Args:
+            query: Search query
+            top_k: Number of results to return
+            doc_levels: Optional filter on doc_level metadata
+            module: Optional filter on module metadata
+            content_type: Optional filter on content_type metadata
+            **kwargs: Additional arguments for HybridSearcher
+
+        Returns:
+            List of search results.
         """
         if self.graph is None or self.graph.node_count == 0:
-            return self.search_hierarchical(query, top_k=top_k)
+            return self.search_hierarchical(
+                query,
+                top_k=top_k,
+                doc_levels=doc_levels,
+                module=module,
+                content_type=content_type,
+            )
 
         from src.rag.graph_search import HybridSearcher
 

@@ -10,7 +10,9 @@ context (dependencies, calls, inheritance) for hybrid GraphRAG queries.
 
 Build order: L3 (codex per-file docs) first, then synthesis levels bottom-up
 (L2+ -> L1 -> L0) so the graph captures both fine-grained and coarse-grained
-relationships. Duplicate node IDs are merged automatically.
+relationships.
+
+Duplicate node IDs are merged automatically.
 
 Usage:
     python build_graph.py                      # Full build from all docs
@@ -28,6 +30,7 @@ import logging
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 from rich.console import Console
 from rich.logging import RichHandler
@@ -130,6 +133,126 @@ def _save_state(state: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Validation and Graph Processing
+# ---------------------------------------------------------------------------
+
+def validate_triplets(
+    nodes: list[dict],
+    edges: list[dict],
+    config: dict,
+) -> tuple[list[dict], list[dict]]:
+    """Post-extraction validation: filter invalid nodes and edges.
+
+    Args:
+        nodes: List of node dictionaries with 'id', 'label', 'type' keys
+        edges: List of edge dictionaries with 'source', 'target', 'relation' keys
+        config: Application config containing knowledge_graph schema
+
+    Returns:
+        (clean_nodes, clean_edges) with invalid items removed
+    """
+    knowledge_graph_cfg = config.get("knowledge_graph", {})
+    valid_types = set(knowledge_graph_cfg.get("node_types", []))
+    valid_rels = set(knowledge_graph_cfg.get("relation_types", []))
+    allowed_relations = knowledge_graph_cfg.get("allowed_relations", {})
+
+    # Filter nodes by type
+    clean_nodes = [
+        n for n in nodes 
+        if n.get("id") and n.get("label") and n.get("type") in valid_types
+    ]
+
+    # Build set of valid node IDs
+    node_ids = {n["id"] for n in clean_nodes}
+
+    # Filter edges by relation type and node existence
+    clean_edges = []
+    for e in edges:
+        if not e.get("source") or not e.get("target") or not e.get("relation"):
+            continue
+        
+        # Check if relation is valid for source node type
+        source_type = None
+        for node in clean_nodes:
+            if node["id"] == e["source"]:
+                source_type = node.get("type")
+                break
+        
+        rel = e["relation"]
+        if source_type and rel not in allowed_relations.get(source_type, []):
+            logger.debug(
+                f"Rejected edge {e['source']} --[{rel}]--> {e['target']}: "
+                f"relation not allowed for node type '{source_type}'"
+            )
+            continue
+        
+        if rel not in valid_rels:
+            logger.debug(
+                f"Rejected edge {e['source']} --[{rel}]--> {e['target']}: "
+                f"relation type '{rel}' not in valid types"
+            )
+            continue
+        
+        if e["source"] not in node_ids or e["target"] not in node_ids:
+            logger.debug(
+                f"Rejected edge {e['source']} --[{rel}]--> {e['target']}: "
+                f"source or target node does not exist"
+            )
+            continue
+        
+        clean_edges.append(e)
+
+    logger.info(
+        f"[Validation] Kept {len(clean_nodes)} nodes, {len(clean_edges)} edges "
+        f"(filtered from {len(nodes)} nodes, {len(edges)} edges)"
+    )
+    return clean_nodes, clean_edges
+
+
+def apply_hub_node_dampening(graph: KnowledgeGraph, dampening_factor: float = 0.3) -> int:
+    """Apply dampening to edges of hub nodes (nodes connected to >20% of other nodes).
+
+    Args:
+        graph: KnowledgeGraph instance
+        dampening_factor: Multiplier to apply to hub node edges (default: 0.3)
+
+    Returns:
+        Number of edges modified
+    """
+    if not graph.G.nodes:
+        return 0
+
+    total_nodes = len(graph.G.nodes)
+    threshold = 0.2 * total_nodes  # >20% of nodes
+
+    modified_edges = 0
+    
+    for node_id in graph.G.nodes:
+        # Count outgoing edges (degree)
+        out_degree = graph.G.out_degree(node_id)
+        if out_degree > threshold:
+            logger.info(
+                f"[HubDampening] Node '{node_id}' is a hub ({out_degree} edges, "
+                f"threshold: {threshold:.0f})"
+            )
+            
+            # Apply dampening to all outgoing edges
+            for target_id in graph.G.successors(node_id):
+                if graph.G.has_edge(node_id, target_id):
+                    weight = graph.G.edges[node_id, target_id].get("weight", 1.0)
+                    dampened_weight = weight * dampening_factor
+                    graph.G.edges[node_id, target_id]["weight"] = dampened_weight
+                    modified_edges += 1
+                    logger.debug(
+                        f"  Dampened edge {node_id} -> {target_id}: "
+                        f"{weight:.2f} -> {dampened_weight:.2f}"
+                    )
+
+    logger.info(f"[HubDampening] Modified {modified_edges} edges")
+    return modified_edges
+
+
+# ---------------------------------------------------------------------------
 # Graph builder
 # ---------------------------------------------------------------------------
 
@@ -143,6 +266,7 @@ class GraphBuilder:
         temperature: float = 0.1,
         graph: KnowledgeGraph | None = None,
         force: bool = False,
+        config: Optional[dict] = None,
     ):
         self.client = client
         self.model = model
@@ -161,9 +285,37 @@ class GraphBuilder:
             "total_edges": 0,
             "llm_calls": 0,
         }
+        # Configure extractor with schema from config
+        if config is not None:
+            self._configure_extractor_from_config(config)
 
-    def process_doc(self, doc_path: Path, doc_level: str, state: dict) -> bool:
-        """Extract triplets from a single doc and add to graph.
+    def _configure_extractor_from_config(self, config: dict) -> None:
+        """Configure the extractor with schema from config.
+
+        Args:
+            config: Application config containing knowledge_graph schema
+        """
+        knowledge_graph_cfg = config.get("knowledge_graph", {})
+        
+        # Update entity and relation types
+        if knowledge_graph_cfg.get("node_types"):
+            self.extractor.entity_types = knowledge_graph_cfg["node_types"]
+        
+        if knowledge_graph_cfg.get("relation_types"):
+            self.extractor.relation_types = knowledge_graph_cfg["relation_types"]
+        
+        # Set allowed relations for prompt formatting
+        if knowledge_graph_cfg.get("allowed_relations"):
+            self.extractor.allowed_relations = knowledge_graph_cfg["allowed_relations"]
+
+    def process_doc(
+        self,
+        doc_path: Path,
+        doc_level: str,
+        state: dict,
+        config: dict,
+    ) -> bool:
+        """Extract triplets from a single doc, validate, and add to graph.
 
         Returns True if the doc was processed, False if skipped.
         """
@@ -195,6 +347,7 @@ class GraphBuilder:
         if removed:
             logger.debug(f"Removed {removed} stale nodes from {source}")
 
+        # Extract triplets
         nodes, edges = self.extractor.extract_from_doc(
             doc_text=text,
             doc_source=source,
@@ -204,6 +357,14 @@ class GraphBuilder:
 
         if not nodes and not edges:
             console.print("[yellow]no triplets extracted[/yellow]")
+            self.stats["failed"] += 1
+            return False
+
+        # Validate extracted triplets against schema
+        nodes, edges = validate_triplets(nodes, edges, config)
+
+        if not nodes and not edges:
+            console.print("[yellow]no valid triplets after validation[/yellow]")
             self.stats["failed"] += 1
             return False
 
@@ -239,7 +400,7 @@ class GraphBuilder:
         time.sleep(1)
         return True
 
-    def build_all(self, docs: list[tuple[Path, str]], state: dict) -> None:
+    def build_all(self, docs: list[tuple[Path, str]], state: dict, config: dict) -> None:
         """Process all documents."""
         if not docs:
             console.print("[yellow]No documents found to process.[/yellow]")
@@ -254,7 +415,7 @@ class GraphBuilder:
             paths = by_level[level]
             console.print(f"\n[bold]{level}[/bold] — {len(paths)} document(s)")
             for path in paths:
-                self.process_doc(path, level, state)
+                self.process_doc(path, level, state, config)
 
 
 # ---------------------------------------------------------------------------
@@ -416,15 +577,19 @@ def main():
         temperature=temperature,
         graph=graph,
         force=args.force,
+        config=cfg,
     )
 
-    builder.build_all(docs, state)
+    builder.build_all(docs, state, cfg)
+
+    # Apply hub node dampening
+    dampened_count = apply_hub_node_dampening(graph)
 
     # -- Save ------------------------------------------------------------------
     graph.save()
     _save_state(state)
 
-    # -- Summary ---------------------------------------------------------------
+    # -- Summary ----------------------------------------------------------------
     console.print(f"\n[bold green]=== Build Complete ===[/bold green]")
     console.print(f"  Processed : {builder.stats['processed']}")
     console.print(f"  Skipped   : {builder.stats['skipped']}")
@@ -432,6 +597,8 @@ def main():
     console.print(f"  LLM calls : {builder.stats['llm_calls']}")
     console.print(f"  New nodes : {builder.stats['total_nodes']}")
     console.print(f"  New edges : {builder.stats['total_edges']}")
+    if dampened_count > 0:
+        console.print(f"  Hub dampened edges: {dampened_count}")
 
     show_stats(graph)
 
