@@ -326,13 +326,15 @@ Stored in `context/changelog/YYYY-MM-DD.md`. Viewable at `/docs` → Changelog t
 
 ## IDE Integration
 
-Agent Hub exposes two complementary interfaces once deployed:
+Agent Hub exposes three interfaces, all on **port 8080** (single container):
 
 | Interface | URL | Use case |
 |-----------|-----|----------|
-| **Open WebUI** | `http://localhost:3000` | Chat UI with hybrid search (RAG + GraphRAG) |
+| **Web UI** | `http://localhost:8080` | Built-in chat + workspace + docs browser |
 | **Chat API** | `http://localhost:8080/v1` | Any OpenAI-compatible client (Roo Code, Cursor, etc.) |
 | **MCP tools** | `http://localhost:8080/mcp/sse` | Agent Hub tools in IDE agent mode |
+
+**Open WebUI** (`http://localhost:3000`) is an *optional* third-party chat frontend — start it with `docker-compose.ide.yml`. It connects to Agent Hub's `/v1/*` API, not to MCP directly. MCP is for IDE tools (Roo Code, Continue.dev, Claude Code), not for Open WebUI.
 
 ### Architecture
 
@@ -581,17 +583,19 @@ Documentation browser with three tabs: **Pyramid** (architecture overview + synt
 Agent Hub has **two deployment modes**:
 
 **Web-only** (`docker-compose.yml`):
-| Container | Purpose |
-|---|---|
-| `agent-hub-web` | Web UI (expert + workspace + docs) on port 8080 |
-| `agent-hub-indexer` | Periodic indexer (watch → synthesize → ingest) |
+| Container | Port | Purpose |
+|---|---|---|
+| `agent-hub-web` | 8080 | Web UI + `/v1/*` API + **MCP SSE** (`/mcp/sse`) |
+| `agent-hub-indexer` | — | Periodic indexer (watch → synthesize → ingest) |
 
-**With IDE integration** (add `docker-compose.ide.yml`):
-| Container | Purpose |
-|---|---|
-| `agent-hub-web` | Web UI + `/v1/*` API + MCP SSE on port 8080 |
-| `agent-hub-indexer` | Periodic indexer (watch → synthesize → ingest) |
-| `open-webui` | Chat frontend for Agent Hub on port 3000 |
+**With Open WebUI** (add `docker-compose.ide.yml`):
+| Container | Port | Purpose |
+|---|---|---|
+| `agent-hub-web` | 8080 | Web UI + `/v1/*` API + **MCP SSE** (`/mcp/sse`) |
+| `agent-hub-indexer` | — | Periodic indexer (watch → synthesize → ingest) |
+| `open-webui` | 3000 | Chat frontend — connects to Agent Hub `/v1/*` |
+
+> **Note:** There is no separate MCP container or port. MCP is always served by `agent-hub-web` at `http://<host>:8080/mcp/sse`. `Open WebUI` is an optional chat UI — it is not required for MCP or IDE integration.
 
 ### Setup
 
