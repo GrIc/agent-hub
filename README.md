@@ -1,5 +1,6 @@
 # Agent Hub
 
+> For greenfield project authoring (portfolio / specifier / planner / storyteller / presenter), see the companion repo [agent-hub-projects](https://github.com/GrIc/agent-hub-projects).
 A **multi-agent system with RAG** for codebase understanding, documentation, and project management. CLI + web interface.
 
 Works with **any OpenAI-compatible LLM API** — OpenAI, Mistral, vLLM, Ollama, LiteLLM, Azure OpenAI, or any provider that exposes `/v1/chat/completions`.

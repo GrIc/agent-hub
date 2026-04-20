@@ -3,10 +3,9 @@
 Agent Hub -- Multi-agent CLI with RAG.
 
 Usage:
-    python -m src.main                                      # Interactive menu
-    python -m src.main --agent specifier --project my-proj  # Project-scoped agent
-    python -m src.main --agent expert                       # Global agent (no project)
-    python -m src.main --ingest                             # Index documents only
+     python -m src.main                                      # Interactive menu
+     python -m src.main --agent expert                       # Global agent (no project)
+     python -m src.main --ingest                             # Index documents only
 """
 
 import argparse
@@ -26,23 +25,14 @@ from src.client import ResilientClient
 from src.rag.ingest import ingest_directory
 from src.rag.store import VectorStore
 from src.agent_defs import load_agent_definition, list_available_agents, discover_custom_agents
-from src.projects import list_projects, get_or_create_project, Project
 
 # Core agents (with dedicated Python classes for special commands)
 from src.agents.codex import CodexAgent
 from src.agents.documenter import DocumenterAgent
 from src.agents.code import CodeAgent
-from src.agents.portfolio import PortfolioAgent
-from src.agents.specifier import SpecifierAgent
-from src.agents.planner import PlannerAgent
-from src.agents.presenter import PresenterAgent
-from src.agents.storyteller import StorytellerAgent
 
 # Base classes for custom agents
 from src.agents.base import BaseAgent
-from src.pipeline import run_pipeline, show_pipeline_status
-from src.pipeline_loader import discover_pipelines
-from src.agents.project_agent import ProjectAgent
 
 console = Console()
 
@@ -55,13 +45,8 @@ CORE_GLOBAL_AGENTS = {
     "code":       {"class": CodeAgent,        "emoji": "🔧", "desc": "Implement tasks, modify code in workspace"},
 }
 
-CORE_PROJECT_AGENTS = {
-    "portfolio":  {"class": PortfolioAgent,   "emoji": "📋", "desc": "Aggregate notes -> requirements"},
-    "specifier":  {"class": SpecifierAgent,   "emoji": "📝", "desc": "Requirements -> technical specifications"},
-    "planner":    {"class": PlannerAgent,     "emoji": "📅", "desc": "Specifications -> roadmap with tasks"},
-    "presenter":  {"class": PresenterAgent,   "emoji": "🎬", "desc": "All docs -> slide deck"},
-    "storyteller": {"class": StorytellerAgent, "emoji": "📖", "desc": "All docs -> techno-functional synthesis"},
-}
+# Project functionality has been moved to agent-hub-projects repo
+CORE_PROJECT_AGENTS = {}
 
 
 def _build_agent_registry() -> tuple[dict, dict, dict]:
@@ -147,7 +132,7 @@ def run_ingestion(cfg: dict, client: ResilientClient, store: VectorStore) -> int
     return added
 
 
-def show_agent_menu(project_name: str = None):
+def show_agent_menu(project_name: str | None = None):
     table = Table(title="Available agents", show_header=True)
     table.add_column("#", style="bold cyan", width=3)
     table.add_column("Agent", style="bold")
@@ -161,29 +146,32 @@ def show_agent_menu(project_name: str = None):
         tag = " [dim](custom)[/dim]" if info.get("class") in ("dynamic_global",) else ""
         table.add_row(str(i), f"{info['emoji']} {key}{tag}", info["desc"], "global")
         i += 1
-    for key, info in PROJECT_AGENTS.items():
-        scope = f"project: {project_name}" if project_name else "[red]needs --project[/red]"
-        tag = " [dim](custom)[/dim]" if info.get("class") in ("dynamic_project",) else ""
-        table.add_row(str(i), f"{info['emoji']} {key}{tag}", info["desc"], scope)
-        i += 1
+    # Project functionality has been moved to agent-hub-projects repo
+    # All agents are now global agents
+    # for key, info in PROJECT_AGENTS.items():
+    #     scope = f"project: {project_name}" if project_name else "[red]needs --project[/red]"
+    #     tag = " [dim](custom)[/dim]" if info.get("class") in ("dynamic_project",) else ""
+    #     table.add_row(str(i), f"{info['emoji']} {key}{tag}", info["desc"], scope)
+    #     i += 1
 
     console.print(table)
 
-    projects = list_projects()
-    if projects:
-        console.print(f"\n[dim]Projects: {', '.join(projects)}[/dim]")
-    if project_name:
-        console.print(f"[dim]Active project: {project_name}[/dim]")
-    else:
-        console.print(f"[dim]No project selected. Use --project <n> for project agents.[/dim]")
+    # Project functionality has been moved to agent-hub-projects repo
+    # projects = list_projects()
+    # if projects:
+    #     console.print(f"\n[dim]Projects: {', '.join(projects)}[/dim]")
+    # if project_name:
+    #     console.print(f"[dim]Active project: {project_name}[/dim]")
+    # else:
+    #     console.print(f"[dim]No project selected. Use --project <n> for project agents.[/dim]")
 
     console.print(
-        "\n[dim]Global commands: /switch, /reindex, /pipeline, /quit[/dim]"
+        "\n[dim]Global commands: /switch, /reindex, /quit[/dim]"
         "\n[dim]Report commands: /save, /reports, /undo[/dim]"
     )
 
 
-def _create_dynamic_agent(name: str, agent_info: dict, cfg: dict, client: ResilientClient, store: VectorStore, project: Project = None):
+def _create_dynamic_agent(name: str, agent_info: dict, cfg: dict, client: ResilientClient, store: VectorStore, project=None):
     """Create a custom agent dynamically from its .md config."""
     md_config = agent_info.get("config", {})
     scope = md_config.get("scope", "global")
@@ -212,19 +200,10 @@ def _create_dynamic_agent(name: str, agent_info: dict, cfg: dict, client: Resili
         "extra_params": md_config.get("extra_params", {}),
     }
 
-    if scope == "project":
-        if not project:
-            console.print(f"[red]Agent '{name}' requires a project. Use --project <n>.[/red]")
-            return None
-        kwargs["project"] = project
-        agent = ProjectAgent(**kwargs)
-        agent.name = name
-        agent.doc_type = md_config.get("doc_type", name)
-        agent.output_tag = md_config.get("output_tag", f"{name}_md")
-        agent.upstream_types = md_config.get("upstream_types", [])
-    else:
-        agent = BaseAgent(**kwargs)
-        agent.name = name
+    # Project functionality has been moved to agent-hub-projects repo
+    # All agents are now treated as global agents
+    agent = BaseAgent(**kwargs)
+    agent.name = name
 
     from src.agent_defs import load_agent_definition
     definition = load_agent_definition(name)
@@ -234,7 +213,7 @@ def _create_dynamic_agent(name: str, agent_info: dict, cfg: dict, client: Resili
     return agent
 
 
-def create_agent(name: str, cfg: dict, client: ResilientClient, store: VectorStore, project: Project = None):
+def create_agent(name: str, cfg: dict, client: ResilientClient, store: VectorStore, project=None):
     if name not in ALL_AGENTS:
         console.print(f"[red]Unknown agent: {name}[/red]")
         return None
@@ -249,9 +228,10 @@ def create_agent(name: str, cfg: dict, client: ResilientClient, store: VectorSto
         console.print(f"[red]Agent '{name}' is web-only.[/red]")
         return None
 
-    if name in PROJECT_AGENTS and not project:
-        console.print(f"[red]Agent '{name}' requires a project. Use --project <n>.[/red]")
-        return None
+    # Project functionality has been moved to agent-hub-projects repo
+    # All agents are now treated as global agents
+    # Project functionality has been moved to agent-hub-projects repo
+    # All agents are now treated as global agents
 
     model = get_model_for_agent(cfg, name)
     temperature = get_agent_temperature(cfg, name)
@@ -270,8 +250,8 @@ def create_agent(name: str, cfg: dict, client: ResilientClient, store: VectorSto
         "extra_params": extra_params,
     }
 
-    if name in PROJECT_AGENTS and project:
-        kwargs["project"] = project
+    # if name in PROJECT_AGENTS and project:
+    #     kwargs["project"] = project
     if name in ("code", "codex"):
         kwargs["workspace_path"] = cfg.get("_defaults", {}).get("workspace_path", "./workspace")
     if name == "code":
@@ -350,56 +330,57 @@ def chat_loop(agent, cfg, client, store, project_name=None):
         if cmd == "/reindex":
             run_ingestion(cfg, client, store)
             continue
-        if cmd.startswith("/pipeline"):
-            if not project_name:
-                console.print("[red]Pipeline requires a project. Use --project <n>.[/red]")
-                continue
-            parts = cmd.split()
-            project = get_or_create_project(project_name)
-
-            # Load available pipelines
-            pipelines = discover_pipelines()
-            if not pipelines:
-                console.print("[red]No pipeline definitions found in agents/pipelines/[/red]")
-                continue
-
-            # Select pipeline
-            if len(pipelines) == 1:
-                pipeline_def = next(iter(pipelines.values()))
-            else:
-                console.print("\n[bold]Available pipelines:[/bold]")
-                pipeline_list = list(pipelines.values())
-                for idx, pdef in enumerate(pipeline_list, 1):
-                    console.print(f"  {idx}. {pdef.icon} {pdef.name} — {pdef.description}")
-                try:
-                    choice = Prompt.ask("\n[bold]Select pipeline[/bold] (number or id)", default="1")
-                    if choice.isdigit():
-                        idx = int(choice) - 1
-                        if 0 <= idx < len(pipeline_list):
-                            pipeline_def = pipeline_list[idx]
-                        else:
-                            console.print("[red]Invalid number.[/red]")
-                            continue
-                    else:
-                        pipeline_def = pipelines.get(choice)
-                        if pipeline_def is None:
-                            console.print(f"[red]Unknown pipeline: {choice}[/red]")
-                            continue
-                except (KeyboardInterrupt, EOFError):
-                    continue
-
-            if len(parts) > 1 and parts[1] == "status":
-                show_pipeline_status(project, pipeline_def)
-                continue
-            start_from = ""
-            if len(parts) > 2 and parts[1] == "from":
-                start_from = parts[2]
-            run_pipeline(
-                pipeline_def, cfg, client, store, project, project_name,
-                agent_factory=create_agent,
-                start_from=start_from,
-            )
-            continue
+        # Pipeline functionality has been moved to agent-hub-projects repo
+        # if cmd.startswith("/pipeline"):
+        #     if not project_name:
+        #         console.print("[red]Pipeline requires a project. Use --project <n>.[/red]")
+        #         continue
+        #     parts = cmd.split()
+        #     project = get_or_create_project(project_name)
+        #
+        #     # Load available pipelines
+        #     pipelines = discover_pipelines()
+        #     if not pipelines:
+        #         console.print("[red]No pipeline definitions found in agents/pipelines/[/red]")
+        #         continue
+        #
+        #     # Select pipeline
+        #     if len(pipelines) == 1:
+        #         pipeline_def = next(iter(pipelines.values()))
+        #     else:
+        #         console.print("\n[bold]Available pipelines:[/bold]")
+        #         pipeline_list = list(pipelines.values())
+        #         for idx, pdef in enumerate(pipeline_list, 1):
+        #             console.print(f"  {idx}. {pdef.icon} {pdef.name} — {pdef.description}")
+        #         try:
+        #             choice = Prompt.ask("\n[bold]Select pipeline[/bold] (number or id)", default="1")
+        #             if choice.isdigit():
+        #                 idx = int(choice) - 1
+        #                 if 0 <= idx < len(pipeline_list):
+        #                     pipeline_def = pipeline_list[idx]
+        #                 else:
+        #                     console.print("[red]Invalid number.[/red]")
+        #                     continue
+        #             else:
+        #                 pipeline_def = pipelines.get(choice)
+        #                 if pipeline_def is None:
+        #                     console.print(f"[red]Unknown pipeline: {choice}[/red]")
+        #                     continue
+        #         except (KeyboardInterrupt, EOFError):
+        #             continue
+        #
+        #     if len(parts) > 1 and parts[1] == "status":
+        #         show_pipeline_status(project, pipeline_def)
+        #         continue
+        #     start_from = ""
+        #     if len(parts) > 2 and parts[1] == "from":
+        #         start_from = parts[2]
+        #     run_pipeline(
+        #         pipeline_def, cfg, client, store, project, project_name,
+        #         agent_factory=create_agent,
+        #         start_from=start_from,
+        #     )
+        #     continue
 
         try:
             with console.status("[bold green]Thinking...", spinner="dots"):
@@ -420,7 +401,6 @@ def main():
     parser = argparse.ArgumentParser(description="Agent Hub -- Multi-agent CLI with RAG")
     all_names = [k for k in ALL_AGENTS if k != "expert"]
     parser.add_argument("--agent", "-a", choices=all_names, help="Start with a specific agent")
-    parser.add_argument("--project", "-p", type=str, help="Project name (required for project agents)")
     parser.add_argument("--ingest", "-i", action="store_true", help="Index documents and quit")
     parser.add_argument("--skip-ingest", "-s", action="store_true", help="Skip indexing at startup")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logs")
@@ -449,16 +429,19 @@ def main():
         console.print("[bold red]API_BASE_URL and API_KEY must be set in .env[/bold red]")
         sys.exit(1)
 
+    # Project functionality has been moved to agent-hub-projects repo
+    # All agents are now global agents
+    # Project functionality has been moved to agent-hub-projects repo
+    # All agents are now global agents
     project = None
     project_name = args.project
     if project_name:
-        project = get_or_create_project(project_name)
-        console.print(f"[dim]Project: {project_name}[/dim]")
+        console.print(f"[yellow]Warning: Project functionality has been moved to agent-hub-projects repo. Ignoring --project {project_name}[/yellow]")
 
     console.print(Panel(
         "[bold]Agent Hub[/bold]\n"
         "Multi-agent system with RAG\n"
-        f"Agents: {len(ALL_AGENTS)} ({len(GLOBAL_AGENTS)} global, {len(PROJECT_AGENTS)} project)",
+        f"Agents: {len(ALL_AGENTS)} ({len(GLOBAL_AGENTS)} global, 0 project)",
         border_style="blue",
     ))
 

@@ -45,27 +45,9 @@ agents:
   developer:
     model: code
     temperature: 0.2
-  portfolio:
-    model: heavy
-    temperature: 0.4
-    extra_params:
-      frequency_penalty: 0.3
-  specifier:
-    model: heavy
-    temperature: 0.3
-    extra_params:
-      top_p: 0.9
-  planner:
-    model: reasoning
-    temperature: 0.0
-    # extra_params:
-    reasoning_effort: "high"     # Provider-specific (Mistral, etc.)
-  storyteller:
-    model: heavy
-    temperature: 0.3
-  presenter:
-    model: heavy
-    temperature: 0.5
+# Project functionality has been moved to agent-hub-projects repo
+# The following agent configurations have been removed:
+# portfolio, specifier, planner, storyteller, presenter
   # Roo Code agents
   architect:
     model: heavy
