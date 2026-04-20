@@ -45,7 +45,6 @@ CORE_GLOBAL_AGENTS = {
     "code":       {"class": CodeAgent,        "emoji": "🔧", "desc": "Implement tasks, modify code in workspace"},
 }
 
-# Project functionality has been moved to agent-hub-projects repo
 CORE_PROJECT_AGENTS = {}
 
 
@@ -146,24 +145,8 @@ def show_agent_menu(project_name: str | None = None):
         tag = " [dim](custom)[/dim]" if info.get("class") in ("dynamic_global",) else ""
         table.add_row(str(i), f"{info['emoji']} {key}{tag}", info["desc"], "global")
         i += 1
-    # Project functionality has been moved to agent-hub-projects repo
-    # All agents are now global agents
-    # for key, info in PROJECT_AGENTS.items():
-    #     scope = f"project: {project_name}" if project_name else "[red]needs --project[/red]"
-    #     tag = " [dim](custom)[/dim]" if info.get("class") in ("dynamic_project",) else ""
-    #     table.add_row(str(i), f"{info['emoji']} {key}{tag}", info["desc"], scope)
-    #     i += 1
 
     console.print(table)
-
-    # Project functionality has been moved to agent-hub-projects repo
-    # projects = list_projects()
-    # if projects:
-    #     console.print(f"\n[dim]Projects: {', '.join(projects)}[/dim]")
-    # if project_name:
-    #     console.print(f"[dim]Active project: {project_name}[/dim]")
-    # else:
-    #     console.print(f"[dim]No project selected. Use --project <n> for project agents.[/dim]")
 
     console.print(
         "\n[dim]Global commands: /switch, /reindex, /quit[/dim]"
@@ -200,8 +183,6 @@ def _create_dynamic_agent(name: str, agent_info: dict, cfg: dict, client: Resili
         "extra_params": md_config.get("extra_params", {}),
     }
 
-    # Project functionality has been moved to agent-hub-projects repo
-    # All agents are now treated as global agents
     agent = BaseAgent(**kwargs)
     agent.name = name
 
@@ -227,11 +208,6 @@ def create_agent(name: str, cfg: dict, client: ResilientClient, store: VectorSto
     if agent_class is None:
         console.print(f"[red]Agent '{name}' is web-only.[/red]")
         return None
-
-    # Project functionality has been moved to agent-hub-projects repo
-    # All agents are now treated as global agents
-    # Project functionality has been moved to agent-hub-projects repo
-    # All agents are now treated as global agents
 
     model = get_model_for_agent(cfg, name)
     temperature = get_agent_temperature(cfg, name)
@@ -330,58 +306,6 @@ def chat_loop(agent, cfg, client, store, project_name=None):
         if cmd == "/reindex":
             run_ingestion(cfg, client, store)
             continue
-        # Pipeline functionality has been moved to agent-hub-projects repo
-        # if cmd.startswith("/pipeline"):
-        #     if not project_name:
-        #         console.print("[red]Pipeline requires a project. Use --project <n>.[/red]")
-        #         continue
-        #     parts = cmd.split()
-        #     project = get_or_create_project(project_name)
-        #
-        #     # Load available pipelines
-        #     pipelines = discover_pipelines()
-        #     if not pipelines:
-        #         console.print("[red]No pipeline definitions found in agents/pipelines/[/red]")
-        #         continue
-        #
-        #     # Select pipeline
-        #     if len(pipelines) == 1:
-        #         pipeline_def = next(iter(pipelines.values()))
-        #     else:
-        #         console.print("\n[bold]Available pipelines:[/bold]")
-        #         pipeline_list = list(pipelines.values())
-        #         for idx, pdef in enumerate(pipeline_list, 1):
-        #             console.print(f"  {idx}. {pdef.icon} {pdef.name} — {pdef.description}")
-        #         try:
-        #             choice = Prompt.ask("\n[bold]Select pipeline[/bold] (number or id)", default="1")
-        #             if choice.isdigit():
-        #                 idx = int(choice) - 1
-        #                 if 0 <= idx < len(pipeline_list):
-        #                     pipeline_def = pipeline_list[idx]
-        #                 else:
-        #                     console.print("[red]Invalid number.[/red]")
-        #                     continue
-        #             else:
-        #                 pipeline_def = pipelines.get(choice)
-        #                 if pipeline_def is None:
-        #                     console.print(f"[red]Unknown pipeline: {choice}[/red]")
-        #                     continue
-        #         except (KeyboardInterrupt, EOFError):
-        #             continue
-        #
-        #     if len(parts) > 1 and parts[1] == "status":
-        #         show_pipeline_status(project, pipeline_def)
-        #         continue
-        #     start_from = ""
-        #     if len(parts) > 2 and parts[1] == "from":
-        #         start_from = parts[2]
-        #     run_pipeline(
-        #         pipeline_def, cfg, client, store, project, project_name,
-        #         agent_factory=create_agent,
-        #         start_from=start_from,
-        #     )
-        #     continue
-
         try:
             with console.status("[bold green]Thinking...", spinner="dots"):
                 response = agent.chat(user_input)
@@ -429,14 +353,8 @@ def main():
         console.print("[bold red]API_BASE_URL and API_KEY must be set in .env[/bold red]")
         sys.exit(1)
 
-    # Project functionality has been moved to agent-hub-projects repo
-    # All agents are now global agents
-    # Project functionality has been moved to agent-hub-projects repo
-    # All agents are now global agents
     project = None
-    project_name = args.project
-    if project_name:
-        console.print(f"[yellow]Warning: Project functionality has been moved to agent-hub-projects repo. Ignoring --project {project_name}[/yellow]")
+    project_name = None
 
     console.print(Panel(
         "[bold]Agent Hub[/bold]\n"

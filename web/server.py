@@ -36,9 +36,7 @@ from src.client import ResilientClient
 from src.rag.store import VectorStore
 from src.agent_defs import load_agent_definition, discover_custom_agents
 from src.reports import load_peer_reports
-from src.workspace_session import WorkspaceSession, SessionManager
 from src.pipeline_loader import discover_pipelines
-from src.agents.pipeline import PIPELINE_STEPS
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +47,6 @@ STATS_FILE = LOGS_DIR / "stats.json"
 CORE_WEB_AGENTS = {
     "expert":      {"emoji": "🧠", "desc": "Code Q&A, review & debug -- the go-to dev assistant"},
     "documenter":  {"emoji": "📐", "desc": "Architecture docs & diagrams"},
-    "portfolio":   {"emoji": "📋", "desc": "Analyze notes -> requirements"},
-    "specifier":   {"emoji": "📝", "desc": "Requirements -> technical specs + architecture"},
-    "planner":     {"emoji": "📅", "desc": "Specs -> roadmap with tasks"},
-    "storyteller": {"emoji": "📖", "desc": "All docs -> techno-functional synthesis"},
-    "presenter":   {"emoji": "🎬", "desc": "Synthesis -> slide deck"},
 }
 
 MAX_HISTORY = 20
@@ -143,8 +136,6 @@ def create_app(cfg: dict) -> FastAPI:
         store.graph = graph
         logger.info(f"KnowledgeGraph loaded : {graph.node_count} nodes, {graph.edge_count} edges")
 
-    # Pipeline session manager (for OpenWebUI pipeline access)
-    pipeline_mgr = SessionManager(cfg, client, store, max_sessions=5)
     _discovered_pipelines = discover_pipelines()
 
     dsl_context = build_custom_dsl_context(cfg)
@@ -397,46 +388,11 @@ def create_app(cfg: dict) -> FastAPI:
 
     @app.get("/v1/models")
     async def list_openai_models():
-        """Return all available agents and pipelines in OpenAI model list format."""
         models = [
-            {
-                "id": name,
-                "object": "model",
-                "owned_by": "agent-hub",
-                "created": 0,
-            }
+            {"id": name, "object": "model", "owned_by": "agent-hub", "created": 0}
             for name in agent_configs
         ]
-        # Expose pipelines with openwebui: yes as prefixed models
-        for pipeline_id, pipeline in _discovered_pipelines.items():
-            if pipeline.openwebui:
-                models.append({
-                    "id": f"pipeline:{pipeline_id}",
-                    "object": "model",
-                    "owned_by": "agent-hub",
-                    "created": 0,
-                })
         return {"object": "list", "data": models}
-
-    @app.get("/v1/pipelines")
-    async def list_pipelines():
-        """Return available pipelines."""
-        return {
-            "pipelines": [
-                {
-                    "id": pid,
-                    "name": p.name,
-                    "description": p.description,
-                    "icon": p.icon,
-                    "scope": p.scope,
-                    "steps": [
-                        {"agent": s.agent, "label": s.label, "description": s.description}
-                        for s in p.steps
-                    ],
-                }
-                for pid, p in _discovered_pipelines.items()
-            ]
-        }
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request):
@@ -482,131 +438,11 @@ def create_app(cfg: dict) -> FastAPI:
 
         chat_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
 
-        # -- Pipeline routing --
         if model.startswith("pipeline:"):
-            pipeline_id = model[len("pipeline:"):]
-            if pipeline_id not in _discovered_pipelines:
-                return JSONResponse(
-                    {"error": f"Pipeline '{pipeline_id}' not found"},
-                    status_code=404,
-                )
-
-            pipeline_def = _discovered_pipelines[pipeline_id]
-            ws_session = pipeline_mgr.get_or_create(session_id)
-            ws_session.touch()
-
-            # Ensure session has a project for pipeline execution
-            if not ws_session.project:
-                ws_session.set_project(f"pipeline-{pipeline_id}")
-
-            if stream:
-                async def pipeline_stream_generator():
-                    try:
-                        # Start pipeline
-                        start_result = ws_session.start_pipeline()
-                        yield f"data: {json.dumps({'type': 'pipeline_start', 'data': start_result})}\n\n".encode()
-
-                        # First step: chat with the query
-                        current_query = query
-                        while True:
-                            step_result = ws_session.chat(current_query)
-                            answer = step_result.get("answer", "")
-                            if answer:
-                                chunks = [answer[i:i+50] for i in range(0, len(answer), 50)]
-                                for chunk_text in chunks:
-                                    data = json.dumps({
-                                        "id": chat_id,
-                                        "object": "chat.completion.chunk",
-                                        "model": model,
-                                        "choices": [{
-                                            "index": 0,
-                                            "delta": {"content": chunk_text},
-                                            "finish_reason": None,
-                                        }],
-                                    })
-                                    yield f"data: {data}\n\n".encode()
-
-                            if not ws_session.pipeline_active:
-                                break
-
-                            # Advance to next step
-                            next_result = ws_session.pipeline_next()
-                            yield f"data: {json.dumps({'type': 'pipeline_step', 'data': next_result})}\n\n".encode()
-
-                            if not ws_session.pipeline_active:
-                                break
-
-                            current_query = ""  # Subsequent steps auto-progress
-
-                        # Final chunk
-                        final_data = json.dumps({
-                            "id": chat_id,
-                            "object": "chat.completion.chunk",
-                            "model": model,
-                            "choices": [{
-                                "index": 0,
-                                "delta": {},
-                                "finish_reason": "stop",
-                            }],
-                        })
-                        yield f"data: {final_data}\n\n".encode()
-                        yield "data: [DONE]\n\n".encode()
-
-                    except Exception as e:
-                        error_data = json.dumps({
-                            "id": chat_id,
-                            "object": "chat.completion.chunk",
-                            "model": model,
-                            "choices": [{
-                                "index": 0,
-                                "delta": {"content": f"[Pipeline error: {type(e).__name__}: {e}]"},
-                                "finish_reason": "stop",
-                            }],
-                        })
-                        yield f"data: {error_data}\n\n".encode()
-                        yield "data: [DONE]\n\n".encode()
-
-                return StreamingResponse(
-                    pipeline_stream_generator(),
-                    media_type="text/event-stream",
-                    headers={"X-Accel-Buffering": "no"},
-                )
-            else:
-                # Non-streaming pipeline execution
-                try:
-                    start_result = ws_session.start_pipeline()
-                    full_response_parts = [f"[Pipeline started: {start_result.get('step', {}).get('agent', 'unknown')}]"]
-
-                    while True:
-                        step_result = ws_session.chat("")
-                        answer = step_result.get("answer", "")
-                        if answer:
-                            full_response_parts.append(answer)
-
-                        if not ws_session.pipeline_active:
-                            break
-
-                        next_result = ws_session.pipeline_next()
-                        if not ws_session.pipeline_active:
-                            break
-
-                    response_text = "\n\n---\n\n".join(full_response_parts)
-
-                    return {
-                        "id": chat_id,
-                        "object": "chat.completion",
-                        "model": model,
-                        "choices": [{
-                            "index": 0,
-                            "message": {"role": "assistant", "content": response_text},
-                            "finish_reason": "stop",
-                        }],
-                    }
-                except Exception as e:
-                    return JSONResponse(
-                        {"error": f"Pipeline execution failed: {type(e).__name__}: {str(e)[:200]}"},
-                        status_code=502,
-                    )
+            return JSONResponse(
+                {"error": "Pipeline execution has moved to agent-hub-projects repo."},
+                status_code=404,
+            )
 
         if stream:
             async def stream_generator():
