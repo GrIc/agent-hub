@@ -392,8 +392,6 @@ def create_app(cfg: dict) -> FastAPI:
     register_docs_routes(app, cfg, store)
 
     # -- Workspace routes (full CLI in web) --
-    from web.workspace_routes import register_workspace_routes
-    register_workspace_routes(app, cfg, client, store)
 
     # -- OpenAI-compatible API endpoints --
 
