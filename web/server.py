@@ -395,8 +395,7 @@ def create_app(cfg: dict) -> FastAPI:
     @app.get("/v1/models")
     async def list_openai_models():
         models = [
-            {"id": name, "object": "model", "owned_by": "agent-hub", "created": 0}
-            for name in agent_configs
+            {"id": "expert-rag", "object": "model", "owned_by": "agent-hub", "created": 0}
         ]
         return {"object": "list", "data": models}
 
@@ -404,9 +403,16 @@ def create_app(cfg: dict) -> FastAPI:
     async def chat_completions(request: Request):
         """OpenAI-compatible chat completions endpoint."""
         body = await request.json()
-        model = body.get("model", "expert")
+        model = body.get("model", "expert-rag")
         stream = body.get("stream", False)
         messages_raw = body.get("messages", [])
+
+        # Only expert-rag model is supported
+        if model != "expert-rag":
+            return JSONResponse(
+                {"error": {"message": "model_not_found", "type": "invalid_request_error", "param": "model", "code": "model_not_found"}},
+                status_code=404,
+            )
 
         # Resolve session_id
         session_id = (
@@ -414,11 +420,8 @@ def create_app(cfg: dict) -> FastAPI:
             or body.get("user", {}).get("id", "openwebui-default")
         )
 
-        # Fallback to expert if model not in agent_configs
-        if model not in agent_configs:
-            model = "expert"
-
-        acfg = agent_configs[model]
+        # expert-rag internally uses the expert agent
+        acfg = agent_configs["expert"]
 
         # Extract last user message content (handle string or list of {type, text})
         query = ""

@@ -376,7 +376,7 @@ docker compose -f docker-compose.yml -f docker-compose.ide.yml up -d
 Open WebUI is at `http://localhost:3000`.
 
 On first visit, create your admin account. Open WebUI is already pre-configured:
-- **Model**: `expert` (Agent Hub expert agent with hybrid search)
+- **Model**: `expert-rag` (Agent Hub expert agent with hybrid search)
 - **API**: points to Agent Hub `/v1/*` — every message goes through RAG + GraphRAG
 - Switch models from the dropdown to use any other agent (`documenter`, `specifier`, etc.)
 
@@ -401,7 +401,7 @@ In Roo Code settings, add a custom OpenAI-compatible provider:
 | Provider | OpenAI Compatible |
 | Base URL | `http://localhost:8080/v1` |
 | API Key | *(your `API_KEY` from `.env`)* |
-| Model | `expert` |
+| Model | `expert-rag` |
 
 Every chat message will go through Agent Hub's full hybrid search pipeline.
 
@@ -455,14 +455,9 @@ In `.continue/config.yaml`:
 
 ```yaml
 models:
-  - title: Agent Hub — Expert
+  - title: Agent Hub — Expert RAG
     provider: openai
-    model: expert
-    apiBase: http://localhost:8080/v1
-    apiKey: <your API_KEY>
-  - title: Agent Hub — Documenter
-    provider: openai
-    model: documenter
+    model: expert-rag
     apiBase: http://localhost:8080/v1
     apiKey: <your API_KEY>
 ```
