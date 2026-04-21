@@ -388,6 +388,10 @@ def create_app(cfg: dict) -> FastAPI:
     from web.docs_routes import register_docs_routes
     register_docs_routes(app, cfg, store)
 
+    # -- Admin routes --
+    from web.admin_routes import router as admin_router
+    app.include_router(admin_router)
+
     # -- Workspace routes (full CLI in web) --
 
     # -- OpenAI-compatible API endpoints --

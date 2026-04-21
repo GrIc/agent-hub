@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Quality Dashboard</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2em; background: #f8f9fa; }
+    h1 { color: #333; }
+    h2 { color: #444; margin-top: 2em; }
+    h3 { color: #555; margin-top: 1.5em; }
+    table { background: white; border: 1px solid #ddd; margin-bottom: 1.5em; width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px 12px; text-align: left; border: 1px solid #ddd; }
+    th { background: #f1f1f1; font-weight: bold; }
+    .nav { margin-bottom: 2em; padding: 1em; background: white; border-radius: 4px; }
+    .error { color: #d32f2f; font-weight: bold; }
+    .success { color: #388e3c; font-weight: bold; }
+    .warning { color: #ff9800; font-weight: bold; }
+    .metric-card { background: white; padding: 1em; margin: 0.5em 0; border-radius: 4px; border-left: 4px solid #1976d2; }
+    .metric-card.warning { border-left-color: #ff9800; }
+    .metric-card.error { border-left-color: #d32f2f; }
+    .metric-card.success { border-left-color: #388e3c; }
+  </style>
+</head>
+<body>
+  <h1>⚙️ Quality Dashboard - Agent Hub</h1>
+  <div class="nav">
+    <a href="/admin">← Back to Admin</a> |
+    <a href="/admin/quality">View JSON</a>
+  </div>
+
+  <div id="app">
+    <p>Loading quality report...</p>
+  </div>
+
+  <script>
+    async function loadReport() {
+      try {
+        const res = await fetch('/admin/quality');
+        if (!res.ok) {
+          document.getElementById('app').innerHTML = `
+            <div class="metric-card error">
+              <h2>❌ Error: ${res.status} ${res.statusText}</h2>
+              <p>${(await res.text())}</p>
+            </div>
+          `;
+          return;
+        }
+        const report = await res.json();
+        renderReport(report);
+      } catch (err) {
+        document.getElementById('app').innerHTML = `
+          <div class="metric-card error">
+            <h2>❌ Failed to load report</h2>
+            <p>${err.message}</p>
+          </div>
+        `;
+      }
+    }
+
+    function renderReport(report) {
+      const app = document.getElementById('app');
+      let html = '';
+
+      // Summary Cards
+      html += '<h2>📊 Overall Summary</h2>';
+      html += '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1em; margin-bottom: 2em;">';
+      
+      const g_version = report.g_version || 'unknown';
+      const indexed_at = report.indexed_at || 'unknown';
+      
+      const codex = report.codex || {};
+      const synthesis = report.synthesis || {};
+      const ingest = report.ingest || {};
+
+      const totalFiles = codex.total_files || 0;
+      const passedFiles = codex.validation_passed || 0;
+      const abstainedFiles = codex.abstained || 0;
+      const retriedFiles = codex.validation_failed_then_retried || 0;
+      const hallucinationRate = totalFiles > 0 ? ((totalFiles - passedFiles) / totalFiles * 100).toFixed(1) : '0.0';
+
+      const totalSections = Object.values(synthesis).reduce((s, l) => s + (l.sections || 0), 0);
+      const totalAbstainedSections = Object.values(synthesis).reduce((s, l) => s + (l.abstained || 0), 0);
+      const totalRemovedNames = Object.values(synthesis).reduce((s, l) => s + (l.removed_count || 0), 0);
+
+      const totalChunks = ingest.total_chunks || 0;
+      const skippedChunks = ingest.skipped_incremental || 0;
+      const addedChunks = ingest.added || 0;
+
+      html += `
+        <div class="metric-card">
+          <h3>📝 Codex</h3>
+          <p><strong>Total Files:</strong> ${totalFiles}</p>
+          <p><strong>✅ Passed:</strong> <span class="success">${passedFiles}</span></p>
+          <p><strong>⚠️ Abstained:</strong> ${abstainedFiles}</p>
+          <p><strong>🔄 Retried:</strong> ${retriedFiles}</p>
+          <p><strong>📈 Hallucination Rate:</strong> <span class="${hallucinationRate === '0.0' ? 'success' : 'error'}">${hallucinationRate}%</span></p>
+        </div>
+      `;
+
+      html += `
+        <div class="metric-card">
+          <h3>🏗️ Synthesis</h3>
+          <p><strong>Total Sections:</strong> ${totalSections}</p>
+          <p><strong>⚠️ Abstained:</strong> ${totalAbstainedSections}</p>
+          <p><strong>🗑️ Removed:</strong> ${totalRemovedNames}</p>
+        </div>
+      `;
+
+      html += `
+        <div class="metric-card">
+          <h3>📦 Ingest</h3>
+          <p><strong>Total Chunks:</strong> ${totalChunks}</p>
+          <p><strong>⏭️ Skipped:</strong> ${skippedChunks}</p>
+          <p><strong>➕ Added:</strong> ${addedChunks}</p>
+        </div>
+      `;
+
+      html += '</div>';
+
+      // Codex Files Table
+      if (codex.files && codex.files.length) {
+        html += '<h2>📝 Codex - File Quality</h2>';
+        const failingFiles = codex.files.filter(f => f.abstained || (f.hallucinated_names && f.hallucinated_names.length));
+        const passingFiles = codex.files.filter(f => !f.abstained && !(f.hallucinated_names && f.hallucinated_names.length));
+
+        if (failingFiles.length) {
+          html += '<h3 class="error">❌ Failing Files</h3>';
+          html += '<table><thead><tr><th>Path</th><th>Attempts</th><th>Abstained</th><th>Hallucinated Names</th></tr></thead><tbody>';
+          failingFiles.slice(0, 50).forEach(f => {
+            const names = (f.hallucinated_names || []).slice(0, 5).join(', ');
+            html += `<tr>
+              <td>${f.path}</td>
+              <td>${f.attempts}</td>
+              <td>${f.abstained ? 'Yes' : 'No'}</td>
+              <td>${names}${f.hallucinated_names && f.hallucinated_names.length > 5 ? '...' : ''}</td>
+            </tr>`;
+          });
+          html += '</tbody></table>';
+        }
+
+        if (passingFiles.length) {
+          html += '<h3 class="success">✅ Passing Files (sample)</h3>';
+          html += '<table><thead><tr><th>Path</th><th>Attempts</th><th>Abstained</th><th>Hallucinated Names</th></tr></thead><tbody>';
+          passingFiles.slice(0, 20).forEach(f => {
+            html += `<tr>
+              <td>${f.path}</td>
+              <td>${f.attempts}</td>
+              <td>${f.abstained ? 'Yes' : 'No'}</td>
+              <td>${(f.hallucinated_names || []).join(', ')}</td>
+            </tr>`;
+          });
+          html += '</tbody></table>';
+        }
+      }
+
+      // Synthesis Levels Table
+      if (Object.keys(synthesis).length) {
+        html += '<h2>🏗️ Synthesis - Per Level</h2>';
+        html += '<table><thead><tr><th>Level</th><th>Sections</th><th>Abstained</th><th>Removed Names</th></tr></thead><tbody>';
+        Object.entries(synthesis).forEach(([level, data]) => {
+          html += `<tr>
+            <td>${level}</td>
+            <td>${data.sections || 0}</td>
+            <td>${data.abstained || 0}</td>
+            <td>${data.removed_count || 0}</td>
+          </tr>`;
+        });
+        html += '</tbody></table>';
+      }
+
+      // Ingest Stats
+      if (ingest.total_chunks !== undefined) {
+        html += '<h2>📦 Ingest - Chunk Statistics</h2>';
+        html += '<table><tbody>';
+        html += `<tr><td><strong>Total Chunks</strong></td><td>${totalChunks}</td></tr>`;
+        html += `<tr><td>Skipped (Incremental)</td><td>${skippedChunks}</td></tr>`;
+        html += `<tr><td>Added</td><td>${addedChunks}</td></tr>`;
+        html += '</tbody></table>';
+      }
+
+      app.innerHTML = html;
+    }
+
+    loadReport();
+  </script>
+</body>
+</html>
