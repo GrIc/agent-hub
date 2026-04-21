@@ -245,7 +245,6 @@ python run.py --clean                               # Delete index + outputs
 ### Agent-specific commands
 
 **Codex**: `/scan [path]`, `/inventory`, `/tree`
-**Code**: `/apply` (git apply), `/diff`, `/diffs`, `/show <file>`, `/tree`
 **Documenter**: `/overview`, `/classes [module]`, `/sequence [flow]`, `/datamodel`, `/components`, `/reference [module]`
 
 ---

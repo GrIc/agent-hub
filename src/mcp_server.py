@@ -112,7 +112,6 @@ class AgentHubBridge:
 
         # Lazily initialized agents
         self._expert = None
-        self._code = None
 
     def _get_expert(self):
         """Lazy-init the expert agent."""
@@ -134,23 +133,6 @@ class AgentHubBridge:
             )
         return self._expert
 
-    def _get_code(self):
-        """Lazy-init the code agent."""
-        if self._code is None:
-            from src.agents.code import CodeAgent
-
-            self._code = CodeAgent(
-                client=self.client,
-                store=self.store,
-                model=self._get_model_for_agent(self.cfg, "code"),
-                temperature=self._get_agent_temperature(self.cfg, "code"),
-                rag_top_k=self.cfg.get("rag", {}).get("top_k", 8),
-                custom_dsl_info=self.dsl_context,
-                domain_info=self.domain_context,
-                extra_params=self._get_agent_extra_params(self.cfg, "code"),
-                workspace_path=str(self.workspace),
-            )
-        return self._code
 
     # -- Tool implementations -----------------------------------------------
 
@@ -330,8 +312,6 @@ class AgentHubBridge:
             '"description": "Add JWT refresh", "details": "..."}\n]\n```'
         )
 
-        code = self._get_code()
-
         try:
             analysis_response = expert.chat(analysis_prompt)
         except Exception as e:
@@ -377,7 +357,7 @@ class AgentHubBridge:
             )
             rag_text = "\n---\n".join(r["text"][:500] for r in rag_context)
 
-            # Ask the code agent to generate the new file content
+            # Ask the expert agent to generate the new file content
             edit_prompt = (
                 f"Task: {description}\n"
                 f"Details: {details}\n"
@@ -401,7 +381,7 @@ class AgentHubBridge:
             )
 
             try:
-                edit_response = code.chat(edit_prompt)
+                edit_response = expert.chat(edit_prompt)
             except Exception as e:
                 edits.append({
                     "filepath": filepath,
@@ -440,8 +420,7 @@ class AgentHubBridge:
             edits.append(edit_entry)
 
         # Reset agent histories to avoid token accumulation across tasks
-        expert.history.clear()
-        code.history.clear()
+        # No code agent anymore
 
         return {
             "deliverable": filename,

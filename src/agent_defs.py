@@ -36,7 +36,7 @@ DEFS_DIR = Path("agents/defs")
 # Agents with dedicated Python classes (special commands like /scan, /apply, etc.)
 # NOTE: "architect" removed — merged into specifier. "storyteller" added.
 CORE_AGENTS = {
-    "expert", "codex", "documenter", "code",
+    "expert", "codex", "documenter",
     "portfolio", "specifier", "planner", "storyteller", "presenter",
 }
 

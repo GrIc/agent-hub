@@ -29,7 +29,6 @@ from src.agent_defs import load_agent_definition, list_available_agents, discove
 # Core agents (with dedicated Python classes for special commands)
 from src.agents.codex import CodexAgent
 from src.agents.documenter import DocumenterAgent
-from src.agents.code import CodeAgent
 
 # Base classes for custom agents
 from src.agents.base import BaseAgent
@@ -42,7 +41,6 @@ CORE_GLOBAL_AGENTS = {
     "expert":     {"class": None,             "emoji": "🧠", "desc": "Code Q&A (web only)"},
     "codex":      {"class": CodexAgent,       "emoji": "🔬", "desc": "Scan codebase, generate documentation for RAG"},
     "documenter": {"class": DocumenterAgent,  "emoji": "📐", "desc": "Architecture docs & diagrams of existing code"},
-    "code":       {"class": CodeAgent,        "emoji": "🔧", "desc": "Implement tasks, modify code in workspace"},
 }
 
 CORE_PROJECT_AGENTS = {}
