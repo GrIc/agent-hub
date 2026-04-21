@@ -1,20 +1,55 @@
-# 0001-extract-projects.md
+# ADR 0001: Extract Project Pipeline to Sister Repository
+
+## Status
+
+Accepted
 
 ## Context
-The greenfield project pipeline (portfolio → specifier → planner → storyteller → presenter) is a coherent product but targets a different user (PM/architect doing greenfield design) than Agent Hub's MCP thesis (coding agents on existing codebases). Extracting it to a sister repo preserves the work and lets each repo tell a coherent story.
 
-## Options considered
-1. **Delete the pipeline code**: Lose history and contributions.
-2. **Extract with git-filter-repo**: Preserve history in a new repo.
-3. **Keep in place**: Continue to dilute the MCP message.
+The greenfield project pipeline (`portfolio → specifier → planner → storyteller → presenter → code`) was initially developed as part of Agent Hub. This pipeline targets a different user persona (PM/architect doing greenfield design) and dilutes Agent Hub's core positioning as "MCP server for code intelligence on large codebases."
+
+
+The pipeline competes with dedicated greenfield design tools and doesn't align with our existential constraint: **zero hallucination in MCP tool responses**. The pipeline's complexity increases maintenance burden and confuses users about Agent Hub's core value proposition.
+
 
 ## Decision
-We chose option 2: extract the project pipeline to a sister repo `agent-hub-projects` using `git-filter-repo` to preserve git history.
+
+Extract the greenfield project pipeline to a sister repository `agent-hub-projects` while preserving git history. Agent Hub will focus exclusively on MCP server functionality for large, under-documented codebases.
 
 ## Consequences
-- New repo `agent-hub-projects` created at https://github.com/GrIc/agent-hub-projects with intact git history for the extracted files.
-- In `agent-hub`:
-  - Removed: src/agents/portfolio.py, src/agents/specifier.py, src/agents/planner.py, src/agents/storyteller.py, src/agents/presenter.py, src/agents/project_agent.py, src/projects.py, src/pipeline.py, src/workspace_session.py, agents/defs/portfolio.md, agents/defs/specifier.md, agents/defs/planner.md, agents/defs/storyteller.md, agents/defs/presenter.md, web/workspace.html, web/workspace_routes.py, projects/ directory.
-  - Updated: src/main.py (removed imports and menu entries for the 5 project agents), config.yaml (removed agent sections), web/server.py (removed /workspace route registration), run.py (removed --project argument and pipeline branches), README.md (added pointer to sister repo).
-- The agent-hub repo now focuses solely on the MCP server for code intelligence.
-- The new repo requires manual addition of infra scaffolding (Dockerfile, docker-compose, config, README) and setup of CI.
+
+### Positive
+- Agent Hub has a clear, singular purpose: MCP server for code intelligence
+- Reduced maintenance burden (no project pipeline code in main repo)
+- Better user experience (no confusion between greenfield design and codebase understanding)
+- Clear separation of concerns between the two products
+
+
+### Negative
+- Users wanting greenfield design capabilities must install both repos
+- Migration effort for existing users of the pipeline
+- Need to maintain documentation and examples for the sister repo
+
+### Neutral
+- Git history preserved in sister repo
+- Project pipeline can evolve independently
+- Agent Hub remains focused on its core competency
+
+## Implementation Plan
+
+1. Create `agent-hub-projects` repository
+2. Use `git filter-repo` to extract pipeline files while preserving history
+3. Update Agent Hub documentation to reference sister repo
+4. Remove pipeline code and configuration from Agent Hub
+5. Update CI/CD to build both repos
+
+## Related Decisions
+
+- DECIDE-1: Extract project pipeline to sister repo
+- T-001: Execute extraction
+
+---
+
+**See Also:**
+- [T-001 — Extract project pipeline to `agent-hub-projects`](T-001-extract-projects.md)
+- [Phase 0 — Cleanup](../roadmap/00_MASTER_ROADMAP.md#phase-0--cleanup-1-week)
