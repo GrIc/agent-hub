@@ -212,8 +212,6 @@ rag:
     - .html
     - .css
     - .scss
-    - .mql
-    - .tcl
     - .pptx
     - .docx
     - .pdf
@@ -247,16 +245,16 @@ rag:
 # This context is injected into all agent prompts automatically.
 # Leave empty ({}) if your project doesn't use a custom DSL.
 
-custom_dsl:
-  name: "MQL"
-  file_extension: ".mql"
-  description: |
-    MQL is the query language for ENOVIA / 3DEXPERIENCE.
-    Key concepts: Business Object (TYPE, NAME, REVISION), Type, Relationship, Attribute, Policy, Vault, JPO, TCL.
-    Common commands: print bus, temp query bus, expand bus, add bus, modify bus, connect bus, execute program.
-  few_shot_examples:
-    - input: "Find all Parts"
-      output: "temp query bus Part * * select name revision description dump |"
+custom_dsl: {}
+  # Example:
+  # name: "HQL"
+  # file_extension: ".hql"
+  # description: |
+  #   HQL is the Hibernate Query Language for database queries.
+  #   Key concepts: Entity, Session, Criteria, HQL query, Named query.
+  # few_shot_examples:
+  #   - input: "Find all users"
+  #     output: "FROM User u WHERE u.active = true ORDER BY u.name"
 
 # ── Custom SCM (optional) ──────────────────────────────────
 # Used by the code agent to unlock/lock files before modification.
