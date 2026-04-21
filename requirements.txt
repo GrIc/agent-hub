@@ -11,3 +11,6 @@ pymupdf>=1.23
 python-pptx>=0.6
 python-docx>=0.8
 mcp[server]>=1.0.0
+tree-sitter>=0.22
+tree-sitter-java>=0.23
+tree-sitter-python>=0.23
