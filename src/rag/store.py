@@ -439,6 +439,32 @@ class VectorStore:
         )
         logger.info("Vector store cleared")
 
+    def purge_chunks_by_source(self, source: str) -> int:
+        """Remove all chunks from ChromaDB attributed to a given source file.
+
+        Args:
+            source: The source file path (relative to workspace) to purge.
+
+        Returns:
+            Number of chunks removed.
+        """
+        try:
+            # Retrieve all chunk IDs with this source
+            result = self.collection.get(
+                where={"source": source},
+                include=["metadatas", "ids"],
+            )
+            if not result["ids"]:
+                return 0
+
+            # Delete the chunks
+            self.collection.delete(ids=result["ids"])
+            logger.info(f"Purged {len(result['ids'])} chunks for source: {source}")
+            return len(result["ids"])
+        except Exception as e:
+            logger.error(f"Failed to purge chunks for source {source}: {e}")
+            return 0
+
     @property
     def count(self) -> int:
         return self.collection.count()

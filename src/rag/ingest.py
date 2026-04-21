@@ -14,11 +14,13 @@ Each chunk is tagged with a `doc_level` metadata for hierarchical RAG:
 
 Features:
   - Semantic breadcrumbs for better embedding context
-  - Rich metadata (block, module, content_type)
+  - Rich metadata (block, module, content_type, line ranges)
   - CRLF normalization
   - Incremental ingestion with file hashing
+  - Automatic removal of chunks for deleted files
 """
 
+import datetime
 import hashlib
 import json
 import logging
@@ -26,6 +28,9 @@ import os
 import re
 from pathlib import Path
 from typing import Optional
+
+from src.rag.grounding import G_VERSION
+from src.rag.identifiers import detect_language
 
 logger = logging.getLogger(__name__)
 
@@ -170,9 +175,83 @@ def _save_hashes(ingest_dir: Path, hashes: dict) -> None:
 
 
 def _compute_file_hash(content: str) -> str:
-    """Compute MD5 hash of normalized content."""
+    """Compute MD5 hash of normalized content.
+    
+    Normalization ensures CRLF and CR line endings hash to the same value.
+    """
     normalized = content.replace("\r\n", "\n").replace("\r", "\n")
     return hashlib.md5(normalized.encode("utf-8")).hexdigest()
+
+
+def _get_line_range_for_chunk(text: str, start_pos: int, chunk_size: int, overlap: int) -> tuple[int, int]:
+    """Calculate line_start and line_end for a chunk based on character position.
+    
+    Args:
+        text: The full normalized text
+        start_pos: Starting character position of the chunk
+        chunk_size: Target chunk size
+        overlap: Chunk overlap
+        
+    Returns:
+        (line_start, line_end) 1-indexed line numbers
+    """
+    # Get text up to start_pos
+    prefix = text[:start_pos]
+    line_start = prefix.count("\n") + 1  # 1-indexed
+    
+    # Calculate end position
+    end_pos = min(start_pos + chunk_size, len(text))
+    suffix = text[start_pos:end_pos]
+    line_end = line_start + suffix.count("\n")
+    
+    return (line_start, line_end)
+
+
+def chunk_with_lines(
+    text: str,
+    chunk_size: int = 1500,
+    overlap: int = 200,
+    source: str = "",
+) -> list[dict]:
+    """Return [{text, line_start, line_end}, ...].
+
+    Use line-based chunking when possible (preserves boundaries), char-based as fallback.
+    """
+    if not text.strip():
+        return []
+    
+    normalized_text = text.replace("\r\n", "\n").replace("\r", "\n")
+    
+    chunks = []
+    start = 0
+    idx = 0
+    
+    while start < len(normalized_text):
+        end = start + chunk_size
+        chunk_text = normalized_text[start:end]
+        
+        # Try to end at a line boundary
+        if end < len(normalized_text):
+            last_nl = chunk_text.rfind("\n")
+            if last_nl > chunk_size // 2:
+                end = start + last_nl + 1
+                chunk_text = normalized_text[start:end]
+        
+        clean_chunk = chunk_text.strip().replace('\x00', '').replace('\0', '')
+        if clean_chunk:
+            line_start, line_end = _get_line_range_for_chunk(normalized_text, start, chunk_size, overlap)
+            chunks.append({
+                "text": clean_chunk,
+                "line_start": int(line_start),
+                "line_end": int(line_end),
+                "chunk_index": int(idx),
+                "source": str(source) if source else "unknown",
+            })
+        
+        start = end - overlap
+        idx += 1
+    
+    return chunks
 
 
 # -- Chunking with semantic breadcrumbs ---
@@ -186,11 +265,14 @@ def chunk_text_with_breadcrumb(
     block: str = "",
     module_name: str = "",
     content_type: str = "",
+    line_start: int = 1,
+    line_end: int = 1,
 ) -> list[dict]:
     """
-    Split text into chunks with metadata including semantic breadcrumbs.
+    Split text into chunks with metadata including semantic breadcrumbs and line ranges.
     
-    Each chunk dict contains: text, source, chunk_index, doc_level, and rich metadata.
+    Each chunk dict contains: text, source, line_start, line_end, chunk_index, doc_level,
+    and rich metadata.
     
     Args:
         text: The text content to chunk
@@ -201,6 +283,8 @@ def chunk_text_with_breadcrumb(
         block: Architectural block (backend, frontend, database, etc.)
         module_name: Module name
         content_type: Type of content (code, codex_doc, synthesis, config, test)
+        line_start: Starting line number for this text
+        line_end: Ending line number for this text
     
     Returns:
         List of chunk dicts with rich metadata
@@ -235,6 +319,8 @@ def chunk_text_with_breadcrumb(
             chunks.append({
                 "text": clean_chunk,
                 "source": str(source) if source is not None else "unknown",
+                "line_start": int(line_start),
+                "line_end": int(line_end),
                 "chunk_index": int(idx),
                 "doc_level": str(doc_level) if doc_level is not None else "unknown",
                 "block": block,
@@ -312,7 +398,7 @@ def ingest_directory(
     if not directory.exists():
         logger.warning(f"Directory {directory} does not exist")
         return []
-
+    
     _skip_dirs = skip_dirs if skip_dirs is not None else SKIP_DIRS
     _max_file_size = max_file_size if max_file_size is not None else MAX_FILE_SIZE
     allowed = set(extensions) if extensions else set()
@@ -341,11 +427,13 @@ def ingest_directory(
             skipped += 1
             continue
 
+        # Compute file key for state tracking
+        file_key = str(path.relative_to(ingest_dir))
+
         # Check if file has changed
         try:
             current_content = path.read_text(encoding="utf-8", errors="replace")
             current_hash = _compute_file_hash(current_content)
-            file_key = str(path.relative_to(ingest_dir))
             
             if not force and state.get(file_key) == current_hash:
                 logger.debug(f"Skipping unchanged file: {path}")
@@ -405,23 +493,70 @@ def ingest_directory(
         if len(relative.parts) > 0:
             module_name = relative.parts[0]
         
-        chunks = chunk_text_with_breadcrumb(
-            text_with_header,
-            chunk_size=chunk_size,
-            overlap=chunk_overlap,
-            source=relative_str,
-            doc_level=doc_level,
-            block=block,
-            module_name=module_name,
-            content_type=content_type,
-        )
-        all_chunks.extend(chunks)
+        # Chunk with line ranges
+        chunks = chunk_with_lines(text_with_header, chunk_size=chunk_size, overlap=chunk_overlap, source=relative_str)
+        
+        # Add semantic breadcrumb and metadata to each chunk
+        enriched_chunks = []
+        for chunk in chunks:
+            # Calculate line range for this chunk
+            chunk_text = chunk["text"]
+            chunk_start_pos = text_with_header.find(chunk_text)
+            if chunk_start_pos == -1:
+                chunk_start_pos = 0
+            line_start, line_end = _get_line_range_for_chunk(text_with_header, chunk_start_pos, chunk_size, chunk_overlap)
+            
+            # Add semantic breadcrumb
+            breadcrumb = (
+                f"Context: Block={block} | Module={module_name} | Level={doc_level} | Type={content_type}\n\n"
+            )
+            embed_text = breadcrumb + chunk_text
+            
+            enriched_chunks.append({
+                "text": embed_text,
+                "source": str(relative_str),
+                "line_start": int(line_start),
+                "line_end": int(line_end),
+                "chunk_index": int(chunk.get("chunk_index", 0)),
+                "doc_level": str(doc_level),
+                "block": block,
+                "module": module_name,
+                "content_type": content_type,
+                "language": detect_language(str(path)),
+                "indexed_at": datetime.datetime.now().isoformat(),
+                "g_version": G_VERSION,
+                "abstained": False,
+            })
+        
+        all_chunks.extend(enriched_chunks)
         
         # Update hash state
         state[file_key] = current_hash
 
+    # Detect removed files and purge their chunks
+    for file_key in list(state.keys()):
+        file_path = ingest_dir / file_key
+        if not file_path.exists():
+            logger.info(f"File removed from workspace: {file_key}")
+            if ingest_dir.exists():
+                from src.rag.store import VectorStore
+                from src.client import ResilientClient
+                import os
+                
+                client = ResilientClient(
+                    api_key=os.environ.get("API_KEY", ""),
+                    base_url=os.environ.get("API_BASE_URL", ""),
+                )
+                store = VectorStore(
+                    client=client,
+                    persist_dir=str(ingest_dir / ".vectordb"),
+                )
+                store.purge_chunks_by_source(file_key)
+            if file_key in state:
+                del state[file_key]
+
     # Save updated hash state
-    if processed > 0:
+    if processed > 0 or state:
         _save_hashes(ingest_dir, state)
 
     # Log level distribution

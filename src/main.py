@@ -330,6 +330,7 @@ def main():
     parser.add_argument("--clear-index", action="store_true", help="Delete index and re-index")
     parser.add_argument("--build-graph", action="store_true", help="Build knowledge graph and quit")
     parser.add_argument("--clean", action="store_true", help="Clean: delete index, outputs")
+    parser.add_argument("--purge-removed", action="store_true", help="Purge chunks for files removed from workspace")
     args = parser.parse_args()
 
     setup_logging(args.verbose)
@@ -413,6 +414,20 @@ def main():
             logging.getLogger(__name__).exception("Ingestion failed")
     else:
         console.print(f"[dim]Indexing skipped. Existing index: {store.count} chunks.[/dim]")
+
+    if args.purge_removed:
+        console.print("[bold]Purging chunks for removed files...[/bold]")
+        from pathlib import Path
+        from src.rag.ingest import ingest_directory
+        ingest_directory(
+            directory=Path("workspace"),
+            extensions=None,
+            label="workspace",
+            force=False,
+            ingest_dir=Path(".vectordb"),
+        )
+        console.print("[green]Purge completed.[/green]")
+        sys.exit(0)
 
     if args.ingest:
         console.print("[green]Indexing complete.[/green]")
