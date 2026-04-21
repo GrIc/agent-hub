@@ -72,7 +72,7 @@ def walk(node, stack):
 Use deterministic IDs so re-running on unchanged files produces the same IDs (essential for incremental updates):
 
 ```
-Module:  "Module:<dotted_package>"             e.g. "Module:com.example.kpi"
+Module:  "Module:<dotted_package>"             e.g. "Module:com.example"
 Package: "Package:<dotted_package>"            same when a Java package
 Class:   "Class:<file_path>:<line>"            e.g. "Class:src/.../Foo.java:42"
 Method:  "Method:<class_id>::<method_name>(<arity>)"

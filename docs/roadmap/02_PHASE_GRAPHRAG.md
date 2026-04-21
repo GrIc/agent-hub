@@ -339,7 +339,7 @@ def _extract_java(file_path: str, source: str) -> tuple[list[dict], list[dict]]:
 This two-pass approach avoids over-engineering AST traversal while keeping accuracy high.
 
 **ACCEPTANCE**
-- Run on the user's `CATKpiCloudViewSolver` (or any well-known Java class):
+- Run on the user's module (e.g. `com.example` or any well-known Java class):
   - Class node appears with correct line range.
   - All declared methods appear as `contains` edges.
   - At least 80% of method invocations within the file are extracted.
@@ -531,10 +531,10 @@ Cap the rendered subgraph at 200 nodes to avoid browser death.
 
 ## 4. Phase 2 success gate
 
-- [ ] Tree-sitter extracts ≥95% of Java declarations from the user's CATIA fixture.
+- [ ] Tree-sitter extracts ≥95% of Java declarations from the user's fixture.
 - [ ] FQN resolution rate ≥70% on calls edges.
 - [ ] `python build_graph.py` incremental run on unchanged workspace: <30s.
-- [ ] `store.get_callers("CATKpiCloudViewSolver")` returns ≥3 real callers, zero hallucinations (every result has a verifiable file path + line).
+- [ ] `store.get_callers("MyModule")` returns ≥3 real callers, zero hallucinations (every result has a verifiable file path + line).
 - [ ] `/admin/graph` renders.
 
 ---

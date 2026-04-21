@@ -54,7 +54,7 @@ If you run a manual `/scan`, `synthesize.py`, or ingest: afterward run `python w
 
 ## Common user workspaces
 
-- Large Java codebases (CATIA / KPI / ENOVIA — Dassault Systèmes domain).
+- Large Java codebases.
 - Python services.
 - Mixed mono-repos.
 

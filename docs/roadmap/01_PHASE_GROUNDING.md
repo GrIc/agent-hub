@@ -165,7 +165,7 @@ def load_noise_filter(config: dict) -> frozenset[str]:
 The original KIP rejected tree-sitter for "simplicity". DECIDE-5 (invest in GraphRAG) overrides that. We now need accurate identifier extraction for both grounding validation AND graph triplet building. Tree-sitter parsers are language-specific WASM files, ~MB each, no native deps.
 
 **SCOPE OF SUPPORT (Phase 1)**:
-- Java (primary, given user's CATIA codebase)
+- Java (primary, given user's codebase)
 - Python (we use it ourselves; required for self-tests)
 - Fallback: regex-only for any other language.
 
@@ -330,7 +330,7 @@ tree-sitter-python>=0.23
   - 5 hand-crafted Java files (nested classes, generics, lombok-like annotations).
   - 5 hand-crafted Python files (dataclasses, decorators, async).
   - 1 unsupported language (e.g. Rust) → falls back to regex without crash.
-- On a real Java file from the workspace (pick `CATKpiCloudViewSolver` if present), extraction returns ≥95% of class/method names that `javap` or `jdt` would report.
+- On a real Java file from the workspace (pick an existing file if present, e.g. `src/main/java/com/example`), extraction returns ≥95% of class/method names that `javap` or `jdt` would report.
 - Extraction of a 1MB Java file completes in <500ms.
 - `tree-sitter` import failure → graceful fallback to regex with a single WARNING log on first call.
 
@@ -709,7 +709,7 @@ For Phase 4 to enforce the citation contract (every MCP tool returns `sources: [
        "source": str(rel_path),           # path relative to workspace
        "doc_level": doc_level,            # L0|L1|L2|L3|code|config|test
        "block": block_name,               # backend|frontend|infra|... (from codex)
-       "module": module_name,             # e.g. CATKpiCloudViewSolver
+       "module": module_name,
        "content_type": content_type,      # code|codex_doc|synthesis|config|test|changelog
        "line_start": chunk["line_start"],
        "line_end": chunk["line_end"],
@@ -889,7 +889,7 @@ A simple HTML page that reads `context/quality_report.json` and renders it.
 Before marking Phase 1 complete and moving to Phase 2/3/4:
 
 - [ ] `tests/golden/test_no_hallucinations.py` passes in CI.
-- [ ] On the user's CATIA workspace: codex hallucination rate ≤ 2% (measured via quality report).
+- [ ] On the user's workspace: codex hallucination rate ≤ 2% (measured via quality report).
 - [ ] Synthesis docs reference only modules that exist as inputs (verified by traceability link parsing).
 - [ ] Incremental ingestion works (re-running on unchanged workspace = 0 re-indexed).
 - [ ] `/admin/quality` displays a non-empty report.

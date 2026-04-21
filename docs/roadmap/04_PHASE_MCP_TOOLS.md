@@ -472,7 +472,7 @@ Replicate this template for every tool. Tasks T-410 through T-460 are decomposed
 - [ ] Every tool has a passing golden test in CI.
 - [ ] Every tool that returns code-related info passes the citation contract.
 - [ ] `docs/mcp/tools.md` is auto-generated and committed.
-- [ ] On the user's workspace: `get_architecture_blueprint("add caching to KPI cloud view solver")` returns a structurally valid result with ≥3 similar features, ≥2 recommended modules, ≥1 insertion point, all verifiable.
+- [ ] On the user's workspace: `get_architecture_blueprint("add caching to the auth service")` returns a structurally valid result with ≥3 similar features, ≥2 recommended modules, ≥1 insertion point, all verifiable.
 - [ ] Hallucinated paths in tool responses (over a 100-call sample): 0.
 - [ ] Roo Code can connect to `/mcp/sse` and successfully invoke 5 different tools.
 - [ ] Claude Code can connect via stdio and successfully invoke 5 different tools.

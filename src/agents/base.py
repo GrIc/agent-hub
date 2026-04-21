@@ -3,16 +3,26 @@ Base agent class. All specialized agents inherit from this.
 Provides: markdown-based prompt, RAG retrieval (hierarchical), peer reports, CR generation.
 """
 
+import json
 import logging
 import re
+import time
 from typing import Optional
 
 from src.client import ResilientClient
 from src.rag.store import VectorStore
 from src.agent_defs import load_agent_definition
 from src.reports import save_report, load_peer_reports, list_reports
+from src.rag.grounding import prepend_grounding, GROUNDING_VERSION
+from src.rag.identifiers import extract_identifiers, validate_names, load_noise_filter
+
+# Re-export for agent imports
+GROUNDING_VERSION = GROUNDING_VERSION
 
 logger = logging.getLogger(__name__)
+
+# Grounding version for logging
+GROUNDING_VERSION = "1.0.0"
 
 
 class BaseAgent:
@@ -25,6 +35,7 @@ class BaseAgent:
     - Per-agent functional context injection (from ## Functional context in .md)
     - Optional extra API params per agent (e.g. reasoning_effort)
     - Automatic CR generation on /save or session end
+    - Grounding utilities for anti-hallucination checks
 
     Subclasses override:
         - name: str
@@ -44,6 +55,7 @@ class BaseAgent:
         custom_dsl_info: str = "",
         domain_info: str = "",
         extra_params: Optional[dict] = None,
+        max_retries: int = 3,
     ):
         self.client = client
         self.store = store
@@ -53,9 +65,11 @@ class BaseAgent:
         self.custom_dsl_info = custom_dsl_info
         self.domain_info = domain_info
         self.extra_params = extra_params or {}
+        self._max_retries = max_retries
         self.history: list[dict] = []
         self.actions_log: list[str] = []
         self.files_generated: list[str] = []
+        self._grounding_enabled = True
 
         # Load definition from markdown
         definition = load_agent_definition(self.name)
@@ -158,6 +172,10 @@ class BaseAgent:
             if cmd_result is not None:
                 return cmd_result
 
+        # Use grounded_chat for anti-hallucination validation
+        if self._grounding_enabled:
+            return self.grounded_chat(user_message, config=None, language="java")
+        
         messages = self.build_messages(user_message)
 
         total_chars = sum(len(m["content"]) for m in messages)
@@ -180,6 +198,118 @@ class BaseAgent:
 
         final = self.post_process(response)
         return final
+    
+    def grounded_chat(
+        self,
+        user_message: str,
+        config: Optional[dict] = None,
+        language: str = "java",
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        """
+        Grounded LLM call with anti-hallucination validation.
+        
+        This method implements the universal grounding template from .roo/skills/grounding.md.
+        
+        Args:
+            user_message: The user's input/query
+            config: Application config for noise filter and max_tokens
+            language: Programming language for identifier extraction
+            max_tokens: Maximum tokens for the LLM call (from config if None)
+            
+        Returns:
+            Grounded LLM response, or [INSUFFICIENT_EVIDENCE] if hallucination detected
+        """
+        import time
+        
+        if not self._grounding_enabled:
+            logger.warning("[Grounding] Grounding is disabled, skipping validation")
+            return self.client.chat(
+                messages=self.build_messages(user_message),
+                model=self.model,
+                temperature=self.temperature,
+                max_tokens=max_tokens or self.extra_params.get("max_tokens") or 4096,
+            )
+        
+        # Log start
+        log_entry = {
+            "stage": self.name,
+            "attempt": 0,
+            "g_version": GROUNDING_VERSION,
+            "hallucinated_names": [],
+            "abstained": False,
+            "duration_ms": 0,
+        }
+        logger.info(json.dumps(log_entry))
+        
+        # Extract known identifiers from input
+        known_ids = extract_identifiers(user_message, language=language)
+        
+        # Load noise filter
+        noise_filter = load_noise_filter(config) if config else set()
+        
+        # Prepare system prompt with grounding
+        system = prepend_grounding(self._system_prompt)
+        
+        # Grounding retry loop
+        for attempt in range(self._max_retries):
+            log_entry["attempt"] = attempt + 1
+            
+            # Call LLM with grounding
+            start_time = time.time()
+            response = self.client.chat(
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_message},
+                ],
+                model=self.model,
+                temperature=0.1 if attempt == 0 else 0.0,
+                max_tokens=max_tokens or self.extra_params.get("max_tokens") or 4096,
+            )
+            duration_ms = int((time.time() - start_time) * 1000)
+            
+            # Check for abstain token
+            if "[INSUFFICIENT_EVIDENCE]" in response:
+                log_entry.update({
+                    "hallucinated_names": [],
+                    "abstained": True,
+                    "duration_ms": duration_ms,
+                })
+                logger.info(json.dumps(log_entry))
+                return response
+            
+            # Validate output against known identifiers
+            unknown = validate_names(response, known_ids | noise_filter)
+            
+            if not unknown:
+                # Success: all names validated
+                log_entry.update({
+                    "hallucinated_names": [],
+                    "abstained": False,
+                    "duration_ms": duration_ms,
+                })
+                logger.info(json.dumps(log_entry))
+                return response
+            
+            # Hallucination detected: tighten prompt for retry
+            unknown_str = ", ".join(unknown[:10])
+            system = prepend_grounding(
+                f"{self._system_prompt}\n\n"
+                f"Previous attempt mentioned unknown names: {unknown_str}. "
+                f"Remove them. If you can't describe the input without these names, "
+                f"write `[INSUFFICIENT_EVIDENCE]` and stop."
+            )
+            
+            log_entry["hallucinated_names"] = unknown
+        
+        # Exhausted retries: return abstain token
+        log_entry.update({
+            "hallucinated_names": unknown if "unknown" in locals() else [],
+            "abstained": True,
+            "duration_ms": duration_ms if "duration_ms" in locals() else 0,
+        })
+        logger.info(json.dumps(log_entry))
+        return "[INSUFFICIENT_EVIDENCE]"
 
     def handle_command(self, cmd: str) -> Optional[str]:
         """Handle /commands. Override in subclasses for agent-specific commands."""

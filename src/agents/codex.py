@@ -8,19 +8,24 @@ Two modes:
 Generated docs go to context/docs/ to enrich RAG for all agents.
 """
 
+import json
 import logging
 import os
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from src.agents.base import BaseAgent
+from src.rag.grounding import prepend_grounding
+from src.rag.identifiers import extract_identifiers, validate_names, load_noise_filter
 
 logger = logging.getLogger(__name__)
 
 CONTEXT_DOCS_DIR = Path("context/docs")
 OUTPUT_DIR = Path("output")
+GROUNDING_VERSION = "1.0.0"
 
 # Fallback defaults — overridden at instantiation by config.yaml [scanning] via scan_config.
 # Edit config.yaml, not here.
@@ -410,6 +415,110 @@ class CodexAgent(BaseAgent):
             f"after {MAX_COMPLETION_ATTEMPTS} attempts. Saving partial result."
         )
         return accumulated + "\n\n> ⚠️ **[INCOMPLETE]** This document was truncated and could not be completed automatically. Consider splitting the module or increasing `max_tokens`.\n"
+
+    # -- Grounded LLM call with anti-hallucination validation ---
+    
+    def grounded_chat(
+        self,
+        user_message: str,
+        config: Optional[dict] = None,
+        language: str = "java",
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        """
+        Grounded LLM call with anti-hallucination validation.
+        
+        This method implements the universal grounding template from .roo/skills/grounding.md.
+        
+        Args:
+            user_message: The user's input/query
+            config: Application config for noise filter and max_tokens
+            language: Programming language for identifier extraction
+            max_tokens: Maximum tokens for the LLM call (from config if None)
+            
+        Returns:
+            Grounded LLM response, or [INSUFFICIENT_EVIDENCE] if hallucination detected
+        """
+        # Log start
+        log_entry = {
+            "stage": f"{self.name}_grounded",
+            "attempt": 0,
+            "g_version": GROUNDING_VERSION,
+            "hallucinated_names": [],
+            "abstained": False,
+            "duration_ms": 0,
+        }
+        logger.info(json.dumps(log_entry))
+        
+        # Extract known identifiers from input
+        known_ids = extract_identifiers(user_message, language=language)
+        
+        # Load noise filter
+        noise_filter = load_noise_filter(config) if config else set()
+        
+        # Prepare system prompt with grounding
+        system = prepend_grounding(self._system_prompt)
+        
+        # Grounding retry loop
+        unknown = []
+        for attempt in range(self._max_retries):
+            log_entry["attempt"] = attempt + 1
+            
+            # Call LLM with grounding
+            start_time = time.time()
+            response = self.client.chat(
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_message},
+                ],
+                model=self.model,
+                temperature=0.1 if attempt == 0 else 0.0,
+                max_tokens=max_tokens or self.extra_params.get("max_tokens") or 4096,
+            )
+            duration_ms = int((time.time() - start_time) * 1000)
+            
+            # Check for abstain token
+            if "[INSUFFICIENT_EVIDENCE]" in response:
+                log_entry.update({
+                    "hallucinated_names": [],
+                    "abstained": True,
+                    "duration_ms": duration_ms,
+                })
+                logger.info(json.dumps(log_entry))
+                return response
+            
+            # Validate output against known identifiers
+            unknown = validate_names(response, known_ids | noise_filter)
+            
+            if not unknown:
+                # Success: all names validated
+                log_entry.update({
+                    "hallucinated_names": [],
+                    "abstained": False,
+                    "duration_ms": duration_ms,
+                })
+                logger.info(json.dumps(log_entry))
+                return response
+            
+            # Hallucination detected: tighten prompt for retry
+            unknown_str = ", ".join(unknown[:10])
+            system = prepend_grounding(
+                f"{self._system_prompt}\n\n"
+                f"Previous attempt mentioned unknown names: {unknown_str}. "
+                f"Remove them. If you can't describe the input without these names, "
+                f"write `[INSUFFICIENT_EVIDENCE]` and stop."
+            )
+            
+            log_entry["hallucinated_names"] = unknown
+        
+        # Exhausted retries: return abstain token
+        log_entry.update({
+            "hallucinated_names": unknown,
+            "abstained": True,
+            "duration_ms": duration_ms if "duration_ms" in locals() else 0,
+        })
+        logger.info(json.dumps(log_entry))
+        return "[INSUFFICIENT_EVIDENCE]"
 
     # -- Validation: detect hallucinated names ---
 
