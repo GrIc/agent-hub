@@ -1,7 +1,12 @@
 # Agent Hub
 
-> For greenfield project authoring (portfolio / specifier / planner / storyteller / presenter), see the companion repo [agent-hub-projects](https://github.com/GrIc/agent-hub-projects).
-A **multi-agent system with RAG** for codebase understanding, documentation, and project management. CLI + web interface.
+> The MCP server that gives AI coding agents senior-engineer-level knowledge of your codebase.
+
+Works with **any OpenAI-compatible LLM API** — OpenAI, Mistral, vLLM, Ollama, LiteLLM, Azure OpenAI, or any provider that exposes `/v1/chat/completions`.
+
+Uses **ChromaDB** for vector storage with optional cross-encoder reranking.
+
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 Works with **any OpenAI-compatible LLM API** — OpenAI, Mistral, vLLM, Ollama, LiteLLM, Azure OpenAI, or any provider that exposes `/v1/chat/completions`.
 
@@ -20,9 +25,8 @@ Uses **ChromaDB** for vector storage with optional cross-encoder reranking.
 - [CLI Usage](#cli-usage)
 - [Agents](#agents)
 - [Custom Agents](#custom-agents)
-- [Project Pipeline](#project-pipeline)
 - [Time-Travel Documentation](#time-travel-documentation)
-- [IDE Integration](#ide-integration) (Roo Code, Continue.dev, Claude Code)
+- [IDE Integration](#ide-integration) (Cline, Roo Code, Claude Code, Cursor, Continue.dev)
 - [Docker Deployment](#docker-deployment)
 - [CI/CD (GitLab)](#cicd-gitlab)
 - [Project Structure](#project-structure)
@@ -48,9 +52,9 @@ ln -s /path/to/your/code workspace
 python run.py --agent codex --skip-ingest    # then: /scan
 python synthesize.py                          # Build doc pyramid
 python run.py --ingest                        # Index into RAG
-
 # Run
-python -m web.server                          # Web UI at :8080
+
+python -m web.server                          # Debug chat at :8080/debug/chat
 python run.py --agent expert --skip-ingest    # CLI mode
 ```
 
@@ -173,7 +177,7 @@ This ensures architecture questions get high-level answers while code questions 
 
 ## Web Interface
 
-Agent Hub has three web pages, all served by the same FastAPI server:
+Agent Hub has two web pages, all served by the same FastAPI server:
 
 ```bash
 python run.py --agent codex -s    # Scan workspace → L3 docs

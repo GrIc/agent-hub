@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Agent Hub</title>
+<title>Agent Hub — Debug Chat</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f1117;color:#e0e0e0;min-height:100vh;display:flex;flex-direction:column;}
@@ -59,6 +59,7 @@ pre code{background:none!important;padding:12px;display:block;font-size:13px;lin
 <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
 </head>
 <body>
+<div class="banner">⚠️ Debug UI — for daily chat use Open WebUI at :3000. This page exists only for inspecting retrieval results and source citations.</div>
 <header>
   <h1>Agent Hub</h1>
   <div id="header-right">
@@ -154,9 +155,16 @@ function addMessage(role, content, sources, durationMs) {
         if (sources && sources.length > 0) {
             const srcDiv = document.createElement('div');
             srcDiv.className = 'sources';
+            // Show expanded source citations: file path, line range, doc level, and click-to-expand snippet
             srcDiv.innerHTML = 'Sources: ' + sources.map(function(s) {
-                return '<span>' + s.file + ' (' + (s.score * 100).toFixed(0) + '%)</span>';
-            }).join('');
+                return '<span title="' + s.file + ' (score: ' + (s.score * 100).toFixed(0) + '%)">' + s.file + ' (' + (s.score * 100).toFixed(0) + '%) <button onclick="this.nextElementSibling.style.display=(this.nextElementSibling.style.display==\'none\'?\'block\':\'none\')" style="font-size:10px;cursor:pointer;margin-left:4px;">▶</button></span>' +
+                '<div style="display:none;margin-top:4px;font-family:monospace;font-size:12px;color:#888;padding:4px;background:#2a2b3a;border-radius:4px;">' +
+                '<strong>File:</strong> ' + s.file + '<br>' +
+                '<strong>Lines:</strong> ' + (s.line_start || '?') + '-' + (s.line_end || '?') + '<br>' +
+                '<strong>Doc Level:</strong> ' + (s.doc_level || '?') + '<br>' +
+                '<strong>Snippet:</strong><br><code>' + (s.text || '').trim().substring(0,200) + (s.text && s.text.length>200?'...':'') + '</code>' +
+                '</div>';
+            }).join('<br>');
             div.appendChild(srcDiv);
         }
         if (durationMs) {

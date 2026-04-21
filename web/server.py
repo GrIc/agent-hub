@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Request
+from fastapi.responses import RedirectResponse
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 import uvicorn
 
@@ -235,7 +236,12 @@ def create_app(cfg: dict) -> FastAPI:
     # -- Routes ---
 
     @app.get("/")
-    async def get_index():
+    async def redirect_to_admin():
+        # Redirect root to admin page (placeholder until T-005)
+        return RedirectResponse(url="/admin", status_code=302)
+
+    @app.get("/debug/chat")
+    async def get_debug_chat():
         return FileResponse("web/index.html")
 
     @app.get("/api/agents")
