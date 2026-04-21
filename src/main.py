@@ -390,14 +390,17 @@ def main():
 
     # -- Knowledge Graph (optional) --
     graph_cfg = cfg.get("graph", {})
-    if graph_cfg.get("enabled", False) or args.build_graph:
-        from src.rag.graph import KnowledgeGraph
-        persist_dir = graph_cfg.get("persist_dir", ".graphdb")
-        graph = KnowledgeGraph(persist_dir=persist_dir)
-        store.graph = graph
-        logging.getLogger(__name__).info(
-            f"KnowledgeGraph loaded: {graph.node_count} nodes, {graph.edge_count} edges"
-        )
+    if (graph_cfg.get("enabled", False) or args.build_graph) and not args.ingest:
+        try:
+            from src.rag.graph import KnowledgeGraph
+            persist_dir = graph_cfg.get("persist_dir", ".graphdb")
+            graph = KnowledgeGraph(persist_dir=persist_dir)
+            store.graph = graph
+            logging.getLogger(__name__).info(
+                f"KnowledgeGraph loaded: {graph.node_count} nodes, {graph.edge_count} edges"
+            )
+        except ModuleNotFoundError:
+            logging.getLogger(__name__).warning("networkx not available, skipping KnowledgeGraph")
 
     if args.build_graph:
         import subprocess

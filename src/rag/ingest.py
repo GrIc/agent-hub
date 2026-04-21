@@ -411,6 +411,7 @@ def ingest_directory(
         ingest_dir = directory
     
     state = _load_hashes(ingest_dir)
+    os = __import__('os')
 
     all_paths = []
     for dirpath, dirnames, filenames in os.walk(directory, followlinks=True):

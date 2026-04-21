@@ -11,7 +11,16 @@ Do NOT modify GROUNDING_INSTRUCTION without versioning it (G_VERSION).
 
 G_VERSION = "1.0.0"
 
+import datetime
+
+
 ABSTAIN_TOKEN = "[INSUFFICIENT_EVIDENCE]"
+
+
+def iso_timestamp() -> str:
+    """Return current UTC timestamp as ISO 8601 string."""
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
 
 GROUNDING_INSTRUCTION = """
 ABSOLUTE RULES — VIOLATION = REJECT:

@@ -1,0 +1,12 @@
+{
+  "AuthController.java": "30357467c4db067bc52b93137487bdee",
+  "data_processor.py": "edab4f31738a4c6ad9bf9a2465651d3b",
+  "generic_confusing_file.py": "2ddbeff61206ea248eafd92bfee3f3b0",
+  "LoginRequest.java": "9465802bb2eee0d59ba0063184853827",
+  "README.md": "620d338f98df21e9e3a050a7178273b7",
+  "User.java": "af1b54524fc6868a68c57e242ff36a53",
+  "UserRepository.java": "733ba676f556effbd81ef3369fc61488",
+  "UserService.java": "5519fbfa14df860a8afff3f795c764a3",
+  "utils.py": "841546eb1c20eb05755c55149d2bdc9e",
+  ".ingest_hashes.json": "ed58ee8974097c6e05014ebb4f1a5474"
+}

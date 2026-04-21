@@ -14,7 +14,9 @@ from src.rag.store import VectorStore
 from src.agent_defs import load_agent_definition
 from src.reports import save_report, load_peer_reports, list_reports
 from src.rag.grounding import prepend_grounding, GROUNDING_VERSION
-from src.rag.identifiers import extract_identifiers, validate_names, load_noise_filter
+from src.rag.identifiers import extract_identifiers
+from src.rag.grounding import validate_doc
+from src.rag.grounding import load_noise_filter
 
 # Re-export for agent imports
 GROUNDING_VERSION = GROUNDING_VERSION
@@ -246,7 +248,7 @@ class BaseAgent:
         known_ids = extract_identifiers(user_message, language=language)
         
         # Load noise filter
-        noise_filter = load_noise_filter(config) if config else set()
+        noise_filter = load_noise_filter(config) if config else frozenset()
         
         # Prepare system prompt with grounding
         system = prepend_grounding(self._system_prompt)
@@ -279,7 +281,7 @@ class BaseAgent:
                 return response
             
             # Validate output against known identifiers
-            unknown = validate_names(response, known_ids | noise_filter)
+            unknown = validate_doc(response, known_ids, frozenset(noise_filter) if noise_filter else None)
             
             if not unknown:
                 # Success: all names validated
@@ -301,12 +303,13 @@ class BaseAgent:
             )
             
             log_entry["hallucinated_names"] = unknown
+            duration_ms = int((time.time() - start_time) * 1000)
         
         # Exhausted retries: return abstain token
         log_entry.update({
-            "hallucinated_names": unknown if "unknown" in locals() else [],
+            "hallucinated_names": unknown,
             "abstained": True,
-            "duration_ms": duration_ms if "duration_ms" in locals() else 0,
+            "duration_ms": duration_ms,
         })
         logger.info(json.dumps(log_entry))
         return "[INSUFFICIENT_EVIDENCE]"

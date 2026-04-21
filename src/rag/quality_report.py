@@ -30,167 +30,272 @@ Schema:
 }
 """
 
+from __future__ import annotations
+
 import json
 import threading
 from pathlib import Path
-from typing import Dict, Any, List
-from datetime import datetime
+from typing import Dict, List, Any
+
+from src.rag import grounding
 
 
-# Global state for thread-safe reporting
+# In-memory report structure
 _report_lock = threading.Lock()
-_codex_entries: List[Dict[str, Any]] = []
-_synthesis_entries: Dict[str, Dict[str, Any]] = {}
-_ingest_metrics: Dict[str, Any] = {}
+_report: Dict[str, Any] = {
+    "g_version": grounding.G_VERSION,
+    "indexed_at": grounding.iso_timestamp(),
+    "codex": {
+        "total_files": 0,
+        "validation_passed": 0,
+        "validation_failed_then_retried": 0,
+        "abstained": 0,
+        "files": [],
+    },
+    "synthesis": {},
+    "ingest": {
+        "total_chunks": 0,
+        "skipped_incremental": 0,
+        "added": 0,
+    },
+}
 
 
-def _ensure_report_dir() -> Path:
+def _ensure_context_dir() -> Path:
     """Ensure context directory exists."""
-    context_dir = Path("context")
-    context_dir.mkdir(exist_ok=True)
-    return context_dir
+    context_path = Path("context")
+    context_path.mkdir(exist_ok=True, parents=True)
+    return context_path
 
 
 def _load_existing_report() -> Dict[str, Any]:
     """Load existing report if it exists."""
-    report_path = _ensure_report_dir() / "quality_report.json"
+    report_path = _ensure_context_dir() / "quality_report.json"
     if report_path.exists():
         try:
             with open(report_path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except (json.JSONDecodeError, IOError):
-            return {"codex": {"files": []}, "synthesis": {}, "ingest": {}}
-    return {"codex": {"files": []}, "synthesis": {}, "ingest": {}}
+            return {
+                "g_version": None,
+                "indexed_at": None,
+                "codex": {
+                    "total_files": 0,
+                    "validation_passed": 0,
+                    "validation_failed_then_retried": 0,
+                    "abstained": 0,
+                    "files": [],
+                },
+                "synthesis": {},
+                "ingest": {
+                    "total_chunks": 0,
+                    "skipped_incremental": 0,
+                    "added": 0,
+                },
+            }
+    return {
+        "g_version": None,
+        "indexed_at": None,
+        "codex": {
+            "total_files": 0,
+            "validation_passed": 0,
+            "validation_failed_then_retried": 0,
+            "abstained": 0,
+            "files": [],
+        },
+        "synthesis": {},
+        "ingest": {
+            "total_chunks": 0,
+            "skipped_incremental": 0,
+            "added": 0,
+        },
+    }
+
+
+def _merge_reports(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge report data, preserving existing data where not overridden."""
+    
+    # Merge codex.files
+    existing_files = {f["path"]: f for f in base.get("codex", {}).get("files", [])}
+    new_files = {f["path"]: f for f in updates.get("codex", {}).get("files", [])}
+    merged_files = list({**existing_files, **new_files}.values())
+    
+    merged = base.copy()
+    merged.update(updates)
+    merged["codex"]["files"] = merged_files
+    
+    # Preserve synthesis sections that aren't being updated
+    if "synthesis" in base and "synthesis" in updates:
+        for level, data in base["synthesis"].items():
+            if level not in updates["synthesis"]:
+                updates["synthesis"][level] = data
+    
+    return merged
 
 
 def record_file_quality(path: str, meta: Dict[str, Any]) -> None:
     """Record quality metrics for a single file processed by codex.
     
-    Args:
-        path: File path relative to workspace
-        meta: Dictionary with keys:
-            - attempts: int
-            - abstained: bool
-            - hallucinated_names_last_attempt: list[str]
-            - validation_passed: bool
-            - g_version: str
+    meta should contain:
+    - attempts: int
+    - abstained: bool
+    - hallucinated_names_last_attempt: list[str]
+    - validation_passed: bool
+    - g_version: str
     """
-    global _codex_entries
-    
-    entry = {
-        "path": path,
-        "attempts": meta.get("attempts", 0),
-        "abstained": meta.get("abstained", False),
-        "hallucinated_names": meta.get("hallucinated_names_last_attempt", []),
-        "validation_passed": meta.get("validation_passed", False),
-        "g_version": meta.get("g_version", "unknown"),
-    }
-    
     with _report_lock:
-        _codex_entries.append(entry)
+        _report["codex"]["total_files"] += 1
+        
+        file_entry = {
+            "path": path,
+            "attempts": meta.get("attempts", 1),
+            "abstained": meta.get("abstained", False),
+            "hallucinated_names": meta.get("hallucinated_names_last_attempt", []),
+        }
+        
+        _report["codex"]["files"].append(file_entry)
+        
+        if meta.get("abstained"):
+            _report["codex"]["abstained"] += 1
+        elif meta.get("validation_passed"):
+            _report["codex"]["validation_passed"] += 1
+        else:
+            _report["codex"]["validation_failed_then_retried"] += 1
 
 
 def record_synthesis_quality(
-    level: str,
-    section_id: str,
-    abstained: bool = False,
-    removed_count: int = 0,
+    level: str, section_id: str, **kwargs: Any
 ) -> None:
-    """Record quality metrics for synthesis output.
+    """Record quality metrics for synthesis at a specific level.
     
-    Args:
-        level: Synthesis level (L0, L1, L2, L3-aggregate)
-        section_id: Identifier for the section being synthesized
-        abstained: Whether the section was abstained
-        removed_count: Number of hallucinated names removed
+    kwargs can contain:
+    - abstained: bool
+    - removed_count: int
     """
-    global _synthesis_entries
-    
-    if level not in _synthesis_entries:
-        _synthesis_entries[level] = {"sections": 0, "abstained": 0, "removed_count": 0}
-    
-    _synthesis_entries[level]["sections"] += 1
-    if abstained:
-        _synthesis_entries[level]["abstained"] += 1
-    _synthesis_entries[level]["removed_count"] += removed_count
+    with _report_lock:
+        level_data = _report["synthesis"].setdefault(level, {
+            "sections": 0,
+            "abstained": 0,
+            "removed_count": 0,
+        })
+        level_data["sections"] += 1
+        
+        if kwargs.get("abstained"):
+            level_data["abstained"] += 1
+        if "removed_count" in kwargs:
+            level_data["removed_count"] += kwargs["removed_count"]
 
 
-def record_ingest_metrics(total_chunks: int, skipped_incremental: int, added: int) -> None:
-    """Record ingestion metrics.
-    
-    Args:
-        total_chunks: Total chunks processed
-        skipped_incremental: Chunks skipped due to incremental indexing
-        added: Chunks added to vector store
-    """
-    global _ingest_metrics
-    
-    _ingest_metrics = {
-        "total_chunks": total_chunks,
-        "skipped_incremental": skipped_incremental,
-        "added": added,
-    }
+def record_ingest_quality(
+    total_chunks: int = 0,
+    skipped_incremental: int = 0,
+    added: int = 0,
+) -> None:
+    """Record quality metrics for ingestion."""
+    with _report_lock:
+        _report["ingest"]["total_chunks"] += total_chunks
+        _report["ingest"]["skipped_incremental"] += skipped_incremental
+        _report["ingest"]["added"] += added
+
+
+def reset_report() -> None:
+    """Reset the in-memory report to initial state."""
+    global _report
+    with _report_lock:
+        _report = {
+            "g_version": grounding.G_VERSION,
+            "indexed_at": None,
+            "codex": {
+                "total_files": 0,
+                "validation_passed": 0,
+                "validation_failed_then_retried": 0,
+                "abstained": 0,
+                "files": [],
+            },
+            "synthesis": {},
+            "ingest": {
+                "total_chunks": 0,
+                "skipped_incremental": 0,
+                "added": 0,
+            },
+        }
 
 
 def write_report() -> Path:
     """Flush in-memory report to context/quality_report.json. Return path."""
-    report_path = _ensure_report_dir() / "quality_report.json"
+    global _report
     
-    # Load existing report to preserve data across multiple runs
-    existing = _load_existing_report()
-    
-    # Build new report
-    report = {
-        "g_version": "1.0.0",
-        "indexed_at": datetime.utcnow().isoformat() + "Z",
-        "codex": {
-            "total_files": len(_codex_entries),
-            "validation_passed": sum(1 for e in _codex_entries if e.get("validation_passed")),
-            "validation_failed_then_retried": sum(1 for e in _codex_entries if e.get("attempts", 0) > 1),
-            "abstained": sum(1 for e in _codex_entries if e.get("abstained")),
-            "files": _codex_entries,
-        },
-        "synthesis": existing.get("synthesis", {})
-        if existing.get("synthesis")
-        else {
-            level: {
-                "sections": data.get("sections", 0),
-                "abstained": data.get("abstained", 0),
-                "removed_count": data.get("removed_count", 0),
-            }
-            for level, data in _synthesis_entries.items()
-        },
-        "ingest": _ingest_metrics,
-    }
-    
-    # Merge existing synthesis data
-    if "synthesis" in existing:
-        for level, data in existing["synthesis"].items():
-            if level in report["synthesis"]:
-                report["synthesis"][level]["sections"] += data.get("sections", 0)
-                report["synthesis"][level]["abstained"] += data.get("abstained", 0)
-                report["synthesis"][level]["removed_count"] += data.get("removed_count", 0)
-            else:
-                report["synthesis"][level] = data
-    
-    # Write report
-    with open(report_path, "w", encoding="utf-8") as f:
-        json.dump(report, f, indent=2, ensure_ascii=False)
-    
-    return report_path
+    with _report_lock:
+        # Load existing report to preserve data
+        existing = _load_existing_report()
+        merged = _merge_reports(existing, _report)
+        merged["indexed_at"] = grounding.iso_timestamp()
+        
+        report_path = _ensure_context_dir() / "quality_report.json"
+        with open(report_path, "w", encoding="utf-8") as f:
+            json.dump(merged, f, indent=2, ensure_ascii=False)
+        
+        # Reset in-memory report for next run
+        _report = {
+            "g_version": grounding.G_VERSION,
+            "indexed_at": None,
+            "codex": {
+                "total_files": 0,
+                "validation_passed": 0,
+                "validation_failed_then_retried": 0,
+                "abstained": 0,
+                "files": [],
+            },
+            "synthesis": {},
+            "ingest": {
+                "total_chunks": 0,
+                "skipped_incremental": 0,
+                "added": 0,
+            },
+        }
+        
+        return report_path
 
 
 def load_report() -> Dict[str, Any]:
-    """Load the quality report from disk.
-    
-    Returns:
-        Dictionary with report data, or empty dict if file doesn't exist
-    """
-    report_path = _ensure_report_dir() / "quality_report.json"
+    """Load the quality report from disk."""
+    report_path = _ensure_context_dir() / "quality_report.json"
     if report_path.exists():
         try:
             with open(report_path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except (json.JSONDecodeError, IOError):
-            return {}
-    return {}
+            return {
+                "g_version": None,
+                "indexed_at": None,
+                "codex": {
+                    "total_files": 0,
+                    "validation_passed": 0,
+                    "validation_failed_then_retried": 0,
+                    "abstained": 0,
+                    "files": [],
+                },
+                "synthesis": {},
+                "ingest": {
+                    "total_chunks": 0,
+                    "skipped_incremental": 0,
+                    "added": 0,
+                },
+            }
+    return {
+        "g_version": None,
+        "indexed_at": None,
+        "codex": {
+            "total_files": 0,
+            "validation_passed": 0,
+            "validation_failed_then_retried": 0,
+            "abstained": 0,
+            "files": [],
+        },
+        "synthesis": {},
+        "ingest": {
+            "total_chunks": 0,
+            "skipped_incremental": 0,
+            "added": 0,
+        },
+    }
