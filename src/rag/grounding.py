@@ -98,3 +98,76 @@ def load_noise_filter(config: dict) -> frozenset[str]:
     
     # Convert to frozenset for immutability and hashability
     return frozenset(terms)
+
+
+def validate_doc(
+    doc_text: str,
+    known_ids: set[str],
+    noise_filter: frozenset[str] | None = None,
+) -> list[str]:
+    """
+    Return list of names mentioned in doc_text that are not in known_ids ∪ noise_filter.
+
+    Scans:
+      - backtick-quoted tokens
+      - CamelCase tokens >= 4 chars
+      - snake_case tokens >= 4 chars
+      - dotted paths (e.g. com.example.Foo or my.module.bar)
+
+    Excludes: tokens that match common English words via a small built-in stopword
+    list (don't reinvent NLTK; ~50 words is enough for this scope).
+    """
+    if noise_filter is None:
+        noise_filter = DEFAULT_NOISE_FILTER
+
+    # Built-in stopword list to avoid false positives on common English words
+    STOPWORDS = frozenset({
+        "the", "be", "to", "of", "and", "a", "in", "that", "have", "i",
+        "it", "for", "not", "on", "with", "he", "as", "you", "do", "at",
+        "this", "but", "his", "by", "from", "they", "we", "say", "her", "she",
+        "or", "an", "will", "my", "one", "all", "would", "there", "their", "what",
+        "so", "up", "out", "if", "about", "who", "get", "which", "go", "me",
+        "when", "make", "can", "like", "time", "no", "just", "him", "know",
+        "take", "people", "into", "year", "your", "good", "some", "could", "them",
+        "see", "other", "than", "then", "now", "look", "only", "come", "its", "over",
+        "think", "also", "back", "after", "use", "two", "how", "our", "work", "first",
+        "well", "way", "even", "new", "want", "because", "any", "these", "give", "day",
+        "most", "us", "is", "are", "was", "were", "has", "had", "been", "being",
+    })
+
+    import re
+
+    # Extract candidate names from output
+    candidates: set[str] = set()
+
+    # 1. Backtick-quoted tokens
+    backtick_matches = re.findall(r'`([^`]+)`', doc_text)
+    candidates.update(backtick_matches)
+
+    # 2. CamelCase tokens >= 4 chars (at least 2 humps: MyClass, not My)
+    camel_matches = re.findall(r'\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b', doc_text)
+    candidates.update(c for c in camel_matches if len(c) >= 4)
+
+    # 3. snake_case tokens >= 4 chars
+    snake_matches = re.findall(r'\b([a-z_][a-z0-9_]{3,})\b', doc_text)
+    candidates.update(s for s in snake_matches if len(s) >= 4)
+
+    # 4. dotted paths (e.g., com.example.Foo, my.module.bar)
+    dotted_matches = re.findall(r'\b([a-z0-9_]+(?:\.[a-z0-9_]+)+)\b', doc_text, re.IGNORECASE)
+    candidates.update(d for d in dotted_matches if len(d) >= 4)
+
+    # Filter: keep only those not in known_ids, not in noise_filter, and not a stopword
+    unknown = []
+    for cand in candidates:
+        # Skip if it's a stopword
+        if cand.lower() in STOPWORDS:
+            continue
+        # Skip if it's in known identifiers or noise filter
+        if cand in known_ids or cand in noise_filter:
+            continue
+        # Skip if it's a common English word pattern (heuristic)
+        if len(cand) <= 6 and cand.lower() in STOPWORDS:
+            continue
+        unknown.append(cand)
+
+    return unknown

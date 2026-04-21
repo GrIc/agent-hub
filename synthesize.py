@@ -52,8 +52,15 @@ from rich.console import Console
 from rich.logging import RichHandler
 from rich.table import Table
 
-# Import grounding instruction for anti-hallucination
-from src.rag.grounding import GROUNDING_INSTRUCTION, validate_doc
+# Import grounding utilities for anti-hallucination
+from src.rag.grounding import (
+    GROUNDING_INSTRUCTION,
+    ABSTAIN_TOKEN,
+    prepend_grounding,
+    contains_abstain,
+)
+from src.rag.identifiers import extract_identifiers
+from src.rag.quality_report import record_synthesis_quality
 
 console = Console()
 logger  = logging.getLogger(__name__)
@@ -431,15 +438,111 @@ class Synthesizer:
     (100 descendants) dominates the overview relative to thirdparty (1 descendant).
     """
 
-    def __init__(self, client, model: str, blocks: dict, force: bool = False):
+    def __init__(self, client, model: str, blocks: dict, config: dict, force: bool = False):
         self.client = client
         self.model  = model
         self.blocks = blocks
+        self.config = config
         self.force  = force
         self.stats  = {"llm_calls": 0, "skipped": 0, "failed": 0, "condensed": 0}
         logger.info("SynthesisEngine initialized with grounding enabled")
 
     # -- LLM + IO --
+
+    def _llm_call_grounded(
+        self,
+        system: str,
+        content: str,
+        *,
+        input_text_for_validation: str,
+        level: str,
+        section_id: str,
+        temperature: float = 0.1,
+        max_tokens: int | None = None,
+        retry: bool = True,
+    ) -> str:
+        """LLM call with grounding + validation. Returns grounded text or [INSUFFICIENT_EVIDENCE]."""
+
+        grounded_system = prepend_grounding(system)
+        if max_tokens is None:
+            max_tokens = self.config["grounding"][f"synthesis_{level}_max_tokens"]
+
+        out = self._llm_call(grounded_system, content, int(max_tokens) if max_tokens is not None else 4096)
+        if contains_abstain(out):
+            record_synthesis_quality(level, section_id, abstained=True)
+            return out
+
+        cleaned, removed = self._validate_synthesis_output(out, input_text_for_validation)
+        if not removed:
+            record_synthesis_quality(level, section_id, abstained=False, removed_count=0)
+            return cleaned
+
+        if not retry:
+            record_synthesis_quality(level, section_id, abstained=False, removed_count=len(removed))
+            return cleaned
+
+        # one retry with stricter prompt
+        retry_system = prepend_grounding(
+            system + f"\n\nPrevious attempt referenced these unknown names: {removed[:10]}. "
+            f"Do not use them or any name not present in the inputs."
+        )
+        out = self._llm_call(retry_system, content, int(max_tokens) if max_tokens is not None else 4096)
+        if contains_abstain(out):
+            record_synthesis_quality(level, section_id, abstained=True)
+            return out
+
+        cleaned2, removed2 = self._validate_synthesis_output(out, input_text_for_validation)
+        record_synthesis_quality(level, section_id, abstained=False, removed_count=len(removed2))
+        if removed2 and len(removed2) > 5:
+            return f"{ABSTAIN_TOKEN}\n\nSynthesis at level {level} for {section_id} could not be grounded."
+        return cleaned2
+
+    def _validate_synthesis_output(
+        self,
+        output: str,
+        input_text: str,
+    ) -> tuple[str, list[str]]:
+        """Return (cleaned_output, removed_names).
+
+        A name is removed if it does not appear in input_text AND is not in the noise filter.
+        Removed names cause the entire SENTENCE containing them to be dropped.
+        """
+        # Extract identifiers from input text for validation
+        try:
+            known_ids = extract_identifiers(input_text)
+            noise = load_noise_filter(self.config)
+            logger.debug(f"Extracted {len(known_ids)} identifiers from input for validation")
+        except Exception as e:
+            logger.warning(f"Failed to extract identifiers for validation: {e}")
+            known_ids = set()
+            noise = DEFAULT_NOISE_FILTER
+
+        # Validate output for hallucinations
+        hallucinations = validate_doc(output, known_ids, noise)
+        if hallucinations:
+            logger.warning(f"Detected {len(hallucinations)} hallucinated terms in output: {hallucinations}")
+
+            # Remove sentences containing hallucinated terms
+            sentences = re.split(r'(?<=[.!?])\s+', output)
+            cleaned_sentences = []
+
+            for sentence in sentences:
+                has_hallucination = False
+                for hallucination in hallucinations:
+                    if re.search(rf'\b{re.escape(hallucination)}\b', sentence):
+                        has_hallucination = True
+                        logger.debug(f"Removing sentence with hallucination '{hallucination}': {sentence[:100]}...")
+                        break
+
+                if not has_hallucination:
+                    cleaned_sentences.append(sentence)
+
+            cleaned_output = ' '.join(cleaned_sentences)
+            logger.info(f"Cleaned output: removed {len(sentences) - len(cleaned_sentences)} sentences containing hallucinations")
+            return cleaned_output, hallucinations
+
+        logger.debug("No hallucinations detected in output")
+        return output, []
 
     def _llm_call(self, system: str, content: str, max_tokens: int = 4096) -> str:
         """
@@ -472,58 +575,6 @@ class Synthesizer:
         time.sleep(2)
         return result
 
-    def _validate_and_clean(self, output: str, input_text: str) -> str:
-        """
-        Strip hallucinated sentences from LLM output using grounding validation.
-        
-        Args:
-            output: The generated text from LLM
-            input_text: The input text used for the LLM call
-            
-        Returns:
-            Cleaned output with hallucinated sentences removed
-            
-        Logs warnings for any hallucinations detected and removed.
-        """
-        # Extract identifiers from input text for validation
-        try:
-            from src.rag.grounding import extract_identifiers
-            known_ids = extract_identifiers(input_text)
-            logger.debug(f"Extracted {len(known_ids)} identifiers from input for validation")
-        except Exception as e:
-            logger.warning(f"Failed to extract identifiers for validation: {e}")
-            known_ids = set()
-        
-        # Validate output for hallucinations
-        hallucinations = validate_doc(output, known_ids)
-        
-        if hallucinations:
-            logger.warning(f"Detected {len(hallucinations)} hallucinated terms in output: {hallucinations}")
-            
-            # Remove sentences containing hallucinated terms
-            # Split output into sentences and filter
-            sentences = re.split(r'(?<=[.!?])\s+', output)
-            cleaned_sentences = []
-            
-            for sentence in sentences:
-                # Check if sentence contains any hallucination
-                has_hallucination = False
-                for hallucination in hallucinations:
-                    # Check for exact match or as a word
-                    if re.search(rf'\b{re.escape(hallucination)}\b', sentence):
-                        has_hallucination = True
-                        logger.debug(f"Removing sentence with hallucination '{hallucination}': {sentence[:100]}...")
-                        break
-                
-                if not has_hallucination:
-                    cleaned_sentences.append(sentence)
-            
-            cleaned_output = ' '.join(cleaned_sentences)
-            logger.info(f"Cleaned output: removed {len(sentences) - len(cleaned_sentences)} sentences containing hallucinations")
-            return cleaned_output
-        
-        logger.debug("No hallucinations detected in output")
-        return output
 
     def _condense(self, text: str, source_name: str) -> str:
         target_words = CONDENSE_TARGET // 5
@@ -539,7 +590,7 @@ class Synthesizer:
                 max_tokens=2048,
             )
             # Validate and clean the output
-            cleaned_output = self._validate_and_clean(raw_output, text)
+            cleaned_output, _ = self._validate_synthesis_output(raw_output, text)
             console.print("[dim]done[/dim]")
             logger.info(f"[Condense] {source_name}: {len(text)} -> {len(cleaned_output)} chars")
             self.stats["condensed"] += 1
@@ -650,13 +701,19 @@ class Synthesizer:
                 end=" ",
             )
             try:
-                raw_output = self._llm_call(prompt, combined, max_tokens=2048)
-                # Validate and clean the output to remove hallucinations
-                cleaned_output = self._validate_and_clean(raw_output, combined)
+                raw_output = self._llm_call_grounded(
+                    prompt,
+                    combined,
+                    input_text_for_validation=combined,
+                    level="L3-aggregate",
+                    section_id=segments_to_module_name(segments),
+                    max_tokens=2048,
+                    retry=True,
+                )
                 title = f"# {block_label} -- {module_name}\n\n"
                 self._save(
                     filepath,
-                    title + cleaned_output,
+                    title + raw_output,
                     f"Level {depth_label} | {block_label} | Module: {module_name}"
                     f" | Sources: {len(doc_paths)}",
                 )
@@ -712,13 +769,19 @@ class Synthesizer:
             end=" ",
         )
         try:
-            raw_output = self._llm_call(prompt, combined, max_tokens=2048)
-            # Validate and clean the output to remove hallucinations
-            cleaned_output = self._validate_and_clean(raw_output, combined)
+            raw_output = self._llm_call_grounded(
+                prompt,
+                combined,
+                input_text_for_validation=combined,
+                level="L2",
+                section_id=module_name,
+                max_tokens=2048,
+                retry=True,
+            )
             title = f"# {block_label} -- {module_name}\n\n"
             self._save(
                 filepath,
-                title + cleaned_output,
+                title + raw_output,
                 f"Level {depth} | {block_label} | Module: {module_name}"
                 f" | Children: {n}",
             )
@@ -869,12 +932,18 @@ class Synthesizer:
             end=" ",
         )
         try:
-            raw_output = self._llm_call(LEVEL0_PROMPT, combined, max_tokens=4096)
-            # Validate and clean the output to remove hallucinations
-            cleaned_output = self._validate_and_clean(raw_output, combined)
+            raw_output = self._llm_call_grounded(
+                LEVEL0_PROMPT,
+                combined,
+                input_text_for_validation=combined,
+                level="L0",
+                section_id="ARCHITECTURE_OVERVIEW",
+                max_tokens=4096,
+                retry=True,
+            )
             self._save(
                 filepath,
-                "# Architecture Overview\n\n" + cleaned_output,
+                "# Architecture Overview\n\n" + raw_output,
                 f"Level 0 | Layers: {', '.join(level1_files.keys())}",
             )
             console.print("[green]OK[/green]")
@@ -1080,7 +1149,7 @@ def main():
         max_retries=defaults.get("retry_max_attempts", 8),
     )
     model = get_model_for_agent(cfg, "codex")
-    synth = Synthesizer(client, model, blocks, force=args.force)
+    synth = Synthesizer(client, model, blocks, config=cfg, force=args.force)
 
     synth.build_all(classification, min_level=args.min_level)
 
