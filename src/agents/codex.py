@@ -18,8 +18,15 @@ from pathlib import Path
 from typing import Optional
 
 from src.agents.base import BaseAgent
-from src.rag.grounding import prepend_grounding
-from src.rag.identifiers import extract_identifiers, validate_names, load_noise_filter
+from src.rag.grounding import (
+    GROUNDING_INSTRUCTION,
+    ABSTAIN_TOKEN,
+    prepend_grounding,
+    contains_abstain,
+    load_noise_filter,
+)
+from src.rag.identifiers import extract_identifiers, detect_language
+from src.rag.quality_report import record_file_quality
 
 logger = logging.getLogger(__name__)
 
@@ -168,40 +175,25 @@ class CodexAgent(BaseAgent):
             results.append(f"  {len(combined)} chars, {len(chunks)} chunk(s) to analyze")
 
             try:
-                doc = self._generate_module_doc(module_name, chunks)
+                # Hardened generation with reject-retry-abstain
+                max_retries = self.extra_params.get("config", {}).get("grounding", {}).get("codex_max_retries", 3)
+                doc, quality_meta = self._generate_doc_for_file_strict(
+                    module_name, combined, max_retries=max_retries
+                )
+                
                 if doc:
-                    # Validate: check that doc doesn't hallucinate names
-                    hall_count, validation_msg = self._validate_doc(doc, combined)
-
-                    if hall_count > 8:
-                        # Too many hallucinations — reject and retry with stronger prompt
-                        logger.warning(
-                            f"[Codex] REJECTED {module_name}: {hall_count} hallucinated names. "
-                            "Retrying with stricter grounding."
-                        )
-                        results.append(f"  Rejected (hallucination: {hall_count} suspicious names). Retrying...")
-
-                        doc = self._generate_module_doc_strict(module_name, chunks)
-                        if doc:
-                            hall_count, validation_msg = self._validate_doc(doc, combined)
-
-                        if not doc or hall_count > 8:
-                            results.append(f"  SKIPPED {module_name}: hallucination persists after retry.")
-                            logger.error(
-                                f"[Codex] SKIPPED {module_name}: still {hall_count} "
-                                "hallucinated names after strict retry."
-                            )
-                            continue
-
-                    if validation_msg:
-                        doc += f"\n\n> ⚠️ **Validation warnings:** {validation_msg}\n"
-                        logger.warning(f"[Codex] Validation issues for {module_name}: {validation_msg}")
-
-                    filepath = self._save_doc(module_name, doc)
-                    generated_docs.append(filepath)
-                    results.append(f"  Doc generated: {filepath}")
-                    self.log_action(f"Documentation generated: {module_name}")
-                    self.log_file(filepath)
+                    # Record quality metrics
+                    record_file_quality(module_name, quality_meta)
+                    
+                    if not quality_meta.get("abstained", False):
+                        filepath = self._save_doc(module_name, doc)
+                        generated_docs.append(filepath)
+                        results.append(f"  Doc generated: {filepath}")
+                        self.log_action(f"Documentation generated: {module_name}")
+                        self.log_file(filepath)
+                    else:
+                        results.append(f"  Skipped (abstained): {module_name}")
+                        logger.warning(f"[Codex] Abstained for {module_name}: {quality_meta.get('hallucinated_names_last_attempt', [])}")
                 else:
                     results.append("  No documentation produced by the LLM.")
                     logger.warning(f"[Codex] Empty doc for {module_name}")
@@ -282,466 +274,6 @@ class CodexAgent(BaseAgent):
 
         return chunks
 
-    # -- Completeness detection ---
-
-    @staticmethod
-    def _count_open_fences(text: str) -> int:
-        """
-        Return the number of unmatched opening code fences (``` or ~~~).
-        An even count means all fences are properly closed.
-        """
-        fences = re.findall(r"^(?:```|~~~)\S*", text, re.MULTILINE)
-        # Each opening fence must be matched by a plain closing fence.
-        # A simple parity check covers the vast majority of cases.
-        return len(fences) % 2
-
-    @staticmethod
-    def _looks_truncated(text: str) -> bool:
-        """
-        Heuristic check for structurally incomplete markdown.
-
-        Returns True when the text shows clear signs of truncation:
-        - Unclosed code fence (odd number of ``` / ~~~)
-        - Ends mid-list without punctuation (e.g. "- Some item without")
-        - Ends mid-sentence (no terminal punctuation or closing markdown)
-        """
-        stripped = text.strip()
-        if not stripped:
-            return True
-
-        # Unclosed code fence — most reliable signal
-        if CodexAgent._count_open_fences(stripped) != 0:
-            logger.debug("[Completeness] Unclosed code fence detected.")
-            return True
-
-        last_line = stripped.splitlines()[-1].strip()
-
-        # Dangling list item with no terminal punctuation
-        if re.match(r"^[-*+]\s+\S", last_line):
-            terminal = set(".!?:)>\"'`")
-            if last_line[-1] not in terminal:
-                logger.debug(f"[Completeness] Truncated list item: {last_line!r}")
-                return True
-
-        # Mid-sentence ending (no terminal punctuation and no markdown closer)
-        terminal_pattern = re.compile(r"[.!?)\"`'>]$|```$|~~~$|\|$")
-        if not terminal_pattern.search(last_line):
-            # Allow short headings and empty endings
-            if len(last_line) > 15:
-                logger.debug(f"[Completeness] Abrupt ending: {last_line!r}")
-                return True
-
-        return False
-
-    # -- LLM call with structural completeness retry ---
-
-    def _call_llm_complete(
-        self,
-        messages: list[dict],
-        label: str = "",
-    ) -> str:
-        """
-        Call the LLM and ensure the response is structurally complete.
-
-        Strategy:
-          1. Call with complete=True (handles finish_reason == "length")
-          2. After each attempt, run _looks_truncated() on the result.
-          3. If still incomplete, send a targeted continuation that explicitly
-             acknowledges the broken structure and asks the model to close it.
-          4. Give up after MAX_COMPLETION_ATTEMPTS and save what we have with
-             a visible [INCOMPLETE] marker so the user knows.
-        """
-        response = self.client.chat(
-            messages=messages,
-            model=self.model,
-            temperature=self.temperature,
-            max_tokens=4096,
-            complete=True,
-        )
-
-        if not self._looks_truncated(response):
-            return response
-
-        # --- Structural completion loop ---
-        accumulated = response
-        for attempt in range(1, MAX_COMPLETION_ATTEMPTS + 1):
-            open_fences = self._count_open_fences(accumulated)
-            fence_hint = (
-                f" Note: there are {open_fences} unclosed code fence(s) in your previous output."
-                if open_fences
-                else ""
-            )
-
-            logger.warning(
-                f"[Codex{' ' + label if label else ''}] Response looks incomplete "
-                f"(attempt {attempt}/{MAX_COMPLETION_ATTEMPTS}).{fence_hint}"
-            )
-
-            continuation_messages = list(messages) + [
-                {"role": "assistant", "content": accumulated},
-                {
-                    "role": "user",
-                    "content": (
-                        "Your previous response appears to be incomplete or cut off."
-                        f"{fence_hint} "
-                        "Please continue from exactly where you stopped and bring the "
-                        "documentation to a proper conclusion. Close any open code fences "
-                        "or lists. Do not repeat what you have already written. "
-                        "REMINDER: only describe what is in the source code. Do not invent."
-                    ),
-                },
-            ]
-
-            chunk = self.client.chat(
-                messages=continuation_messages,
-                model=self.model,
-                temperature=self.temperature,
-                max_tokens=4096,
-                complete=True,
-            )
-
-            accumulated += chunk
-
-            if not self._looks_truncated(accumulated):
-                logger.info(
-                    f"[Codex{' ' + label if label else ''}] Response completed "
-                    f"after {attempt} structural continuation(s)."
-                )
-                return accumulated
-
-        # Give up: save with an explicit marker so the user can see it
-        logger.error(
-            f"[Codex{' ' + label if label else ''}] Could not obtain a complete response "
-            f"after {MAX_COMPLETION_ATTEMPTS} attempts. Saving partial result."
-        )
-        return accumulated + "\n\n> ⚠️ **[INCOMPLETE]** This document was truncated and could not be completed automatically. Consider splitting the module or increasing `max_tokens`.\n"
-
-    # -- Grounded LLM call with anti-hallucination validation ---
-    
-    def grounded_chat(
-        self,
-        user_message: str,
-        config: Optional[dict] = None,
-        language: str = "java",
-        max_tokens: Optional[int] = None,
-    ) -> str:
-        """
-        Grounded LLM call with anti-hallucination validation.
-        
-        This method implements the universal grounding template from .roo/skills/grounding.md.
-        
-        Args:
-            user_message: The user's input/query
-            config: Application config for noise filter and max_tokens
-            language: Programming language for identifier extraction
-            max_tokens: Maximum tokens for the LLM call (from config if None)
-            
-        Returns:
-            Grounded LLM response, or [INSUFFICIENT_EVIDENCE] if hallucination detected
-        """
-        # Log start
-        log_entry = {
-            "stage": f"{self.name}_grounded",
-            "attempt": 0,
-            "g_version": GROUNDING_VERSION,
-            "hallucinated_names": [],
-            "abstained": False,
-            "duration_ms": 0,
-        }
-        logger.info(json.dumps(log_entry))
-        
-        # Extract known identifiers from input
-        known_ids = extract_identifiers(user_message, language=language)
-        
-        # Load noise filter
-        noise_filter = load_noise_filter(config) if config else set()
-        
-        # Prepare system prompt with grounding
-        system = prepend_grounding(self._system_prompt)
-        
-        # Grounding retry loop
-        unknown = []
-        for attempt in range(self._max_retries):
-            log_entry["attempt"] = attempt + 1
-            
-            # Call LLM with grounding
-            start_time = time.time()
-            response = self.client.chat(
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_message},
-                ],
-                model=self.model,
-                temperature=0.1 if attempt == 0 else 0.0,
-                max_tokens=max_tokens or self.extra_params.get("max_tokens") or 4096,
-            )
-            duration_ms = int((time.time() - start_time) * 1000)
-            
-            # Check for abstain token
-            if "[INSUFFICIENT_EVIDENCE]" in response:
-                log_entry.update({
-                    "hallucinated_names": [],
-                    "abstained": True,
-                    "duration_ms": duration_ms,
-                })
-                logger.info(json.dumps(log_entry))
-                return response
-            
-            # Validate output against known identifiers
-            unknown = validate_names(response, known_ids | noise_filter)
-            
-            if not unknown:
-                # Success: all names validated
-                log_entry.update({
-                    "hallucinated_names": [],
-                    "abstained": False,
-                    "duration_ms": duration_ms,
-                })
-                logger.info(json.dumps(log_entry))
-                return response
-            
-            # Hallucination detected: tighten prompt for retry
-            unknown_str = ", ".join(unknown[:10])
-            system = prepend_grounding(
-                f"{self._system_prompt}\n\n"
-                f"Previous attempt mentioned unknown names: {unknown_str}. "
-                f"Remove them. If you can't describe the input without these names, "
-                f"write `[INSUFFICIENT_EVIDENCE]` and stop."
-            )
-            
-            log_entry["hallucinated_names"] = unknown
-        
-        # Exhausted retries: return abstain token
-        log_entry.update({
-            "hallucinated_names": unknown,
-            "abstained": True,
-            "duration_ms": duration_ms if "duration_ms" in locals() else 0,
-        })
-        logger.info(json.dumps(log_entry))
-        return "[INSUFFICIENT_EVIDENCE]"
-
-    # -- Validation: detect hallucinated names ---
-
-    @staticmethod
-    def _validate_doc(doc: str, source_code: str) -> tuple[int, str]:
-        """
-        Generic and flexible verification of hallucinations.
-        Works for any language without knowing its syntax.
-        """
-        # 1. Only extract what the LLM has formatted as code
-        # Capture everything between backticks, except spaces
-        doc_refs = set(re.findall(r'`([^`\s]+)`', doc))
-        
-        # We can also add the words in bold if they look like CamelCase/PascalCase
-        doc_refs |= set(re.findall(r'\*\*([A-Z][a-zA-Z0-9_]+)\*\*', doc))
-
-        # 2. Basic filtering to avoid false positives on very short words
-        doc_refs = {ref for ref in doc_refs if len(ref) >= 3}
-
-        if not doc_refs:
-            return (0, "")
-
-        suspicious = []
-        for ref in sorted(doc_refs):
-            # Optional cleaning if the LLM includes parentheses, ex: `myFunction()`
-            clean_ref = ref.replace("()", "").split(".")[0] 
-            
-            # 3. MAGIC VERIFICATION: Search for pure and hard substring
-            if clean_ref not in source_code:
-                suspicious.append(ref)
-
-        # 4. Evaluation of the tolerance (ex: we accept up to 25% of "not found" words
-        # because they are likely to be language keywords like 'string', 'List', 'dict')
-        hallucination_ratio = len(suspicious) / len(doc_refs)
-
-        # We trigger the error only if there are many suspicious words AND a high ratio
-        if len(suspicious) > 5 and hallucination_ratio > 0.25:
-            return (
-                len(suspicious),
-                f"Possibles hallucinations (ratio {hallucination_ratio:.0%}). "
-                f"{len(suspicious)} names not found in the code (ex: {', '.join(suspicious[:5])})."
-            )
-            
-        return (0, "")
-
-    # -- Doc generation ---
-
-    def _generate_module_doc(self, module_name: str, chunks: list[str]) -> str:
-        """
-        Send code to LLM and get documentation back.
-
-        ANTI-HALLUCINATION: every chunk prompt includes GROUNDING_INSTRUCTION
-        which forces the LLM to only document what it can see in the source.
-        """
-        all_doc_parts = []
-
-        for i, chunk in enumerate(chunks):
-            is_first = i == 0
-            is_last = i == len(chunks) - 1
-
-            # Build the file listing for grounding reference
-            file_list = ", ".join(re.findall(r'\[FILE: (.+?)\]', chunk))
-
-            if is_first and is_last:
-                instruction = (
-                    f"Document the module '{module_name}' CONCISELY. "
-                    "**MAXIMUM 600 words total**. Focus on: purpose, key classes/functions, "
-                    "dependencies, entry points. Skip trivial getters/setters/boilerplate. "
-                    f"Files in this module: {file_list}\n"
-                    f"{GROUNDING_INSTRUCTION}"
-                )
-            elif is_first:
-                instruction = (
-                    f"Document the module '{module_name}' CONCISELY (part {i+1}/{len(chunks)}). "
-                    "**MAXIMUM 600 words total**. Focus on: purpose, key classes/functions, "
-                    "dependencies, entry points. Skip trivial getters/setters/boilerplate. "
-                    f"Files in this chunk: {file_list}\n"
-                    f"Start the documentation. More parts will follow.\n"
-                    f"{GROUNDING_INSTRUCTION}"
-                )
-            else:
-                instruction = (
-                    f"Continuation of CONCISE module documentation '{module_name}' (part {i+1}/{len(chunks)}). "
-                    "**MAXIMUM 600 words total**. Focus on: purpose, key classes/functions, "
-                    "dependencies, entry points. Skip trivial getters/setters/boilerplate. "
-                    f"Files in this chunk: {file_list}\n"
-                    f"{'Finish the documentation.' if is_last else 'Continue.'} "
-                    f"Previous context:\n{all_doc_parts[-1][:500]}...\n"
-                    f"{GROUNDING_INSTRUCTION}"
-                )
-
-            messages = self.build_messages(f"{instruction}\n\nSource code:\n{chunk}")
-            label = f"{module_name} chunk {i+1}/{len(chunks)}"
-
-            response = self._call_llm_complete(messages, label=label)
-
-            doc_match = re.search(r"```doc_md\s*(.*?)\s*```", response, re.DOTALL)
-            if doc_match:
-                all_doc_parts.append(doc_match.group(1))
-            else:
-                partial_match = re.search(r"```doc_md\s*(.*)", response, re.DOTALL)
-                if partial_match:
-                    logger.warning(
-                        f"[Codex] Unclosed ```doc_md block in {label}, "
-                        "using partial content."
-                    )
-                    all_doc_parts.append(partial_match.group(1).strip())
-                else:
-                    all_doc_parts.append(response)
-
-        return "\n\n".join(all_doc_parts)
-
-    def _generate_module_doc_strict(self, module_name: str, chunks: list[str]) -> str:
-        """
-        Strict retry: generate documentation with an extremely constrained prompt.
-        Used when the first attempt produced too many hallucinated names.
-
-        Key differences from _generate_module_doc:
-        - Lower temperature (0.1 instead of agent default)
-        - Explicit "ENUMERATION ONLY" instruction — no prose allowed
-        - Forces a structured format that leaves no room for invention
-        """
-        all_doc_parts = []
-
-        for i, chunk in enumerate(chunks):
-            file_list = ", ".join(re.findall(r'\[FILE: (.+?)\]', chunk))
-
-            instruction = (
-                f"Document the module '{module_name}' in STRICT ENUMERATION mode.\n"
-                f"Files: {file_list}\n\n"
-                "OUTPUT FORMAT — follow this EXACTLY:\n"
-                "1. Module purpose: ONE sentence.\n"
-                "2. For EACH file, list:\n"
-                "   - File path (from the [FILE:] header)\n"
-                "   - Each class/interface name (copy-paste from source)\n"
-                "   - For each class: its public methods (copy-paste the signatures)\n"
-                "   - Imports (copy-paste the import lines)\n"
-                "3. Dependencies: list only what appears in import statements.\n\n"
-                "ABSOLUTE RULES:\n"
-                "- Copy-paste names EXACTLY from the source code. Do not rephrase.\n"
-                "- If a file has no classes (e.g., config file), say 'No classes'.\n"
-                "- Do NOT describe what methods do. Just list them.\n"
-                "- Do NOT add any class, method, or import that is not in the source.\n"
-                "- Shorter is better. An empty doc is better than a wrong doc."
-            )
-
-            messages = self.build_messages(f"{instruction}\n\nSource code:\n{chunk}")
-
-            # Use lower temperature for strict mode
-            response = self.client.chat(
-                messages=messages,
-                model=self.model,
-                temperature=0.1,
-                max_tokens=4096,
-                complete=True,
-            )
-
-            doc_match = re.search(r"```doc_md\s*(.*?)\s*```", response, re.DOTALL)
-            if doc_match:
-                all_doc_parts.append(doc_match.group(1))
-            else:
-                partial_match = re.search(r"```doc_md\s*(.*)", response, re.DOTALL)
-                if partial_match:
-                    all_doc_parts.append(partial_match.group(1).strip())
-                else:
-                    all_doc_parts.append(response)
-
-        return "\n\n".join(all_doc_parts)
-
-    def _save_doc(self, module_name: str, content: str) -> str:
-        """Save generated documentation to context/docs/."""
-        try:
-            CONTEXT_DOCS_DIR.mkdir(parents=True, exist_ok=True)
-            filepath = self._doc_path_for(module_name)
-            logger.info(f"[Codex] Writing doc to: {filepath.resolve()}")
-            filepath.write_text(content.strip(), encoding="utf-8")
-            logger.info(f"Documentation saved: {filepath}")
-            return str(filepath)
-        except Exception as e:
-            logger.error(f"[Codex] _save_doc FAILED for {module_name}: {e}")
-            raise
-
-    # -- /inventory: quick overview ---
-
-    def _inventory(self) -> str:
-        """Quick inventory of the workspace without LLM calls."""
-        if not self.workspace.exists():
-            return f"Workspace not found: {self.workspace}"
-
-        files = self._collect_code_files(self.workspace)
-        if not files:
-            return "No code files found in the workspace."
-
-        by_ext: dict[str, int] = {}
-        by_dir: dict[str, int] = {}
-        total_size = 0
-
-        for f in files:
-            ext = f.suffix.lower()
-            by_ext[ext] = by_ext.get(ext, 0) + 1
-            relative = f.relative_to(self.workspace)
-            top_dir = str(relative.parts[0]) if len(relative.parts) > 1 else "(root)"
-            by_dir[top_dir] = by_dir.get(top_dir, 0) + 1
-            total_size += f.stat().st_size
-
-        lines = [
-            f"Workspace inventory: {self.workspace}",
-            f"   {len(files)} code files, {total_size / 1024:.0f} KB total",
-            "",
-            "By extension:",
-        ]
-        for ext, count in sorted(by_ext.items(), key=lambda x: -x[1]):
-            lines.append(f"  {ext:12s} : {count:4d} files")
-
-        lines.append("\nBy directory (top-level):")
-        for d, count in sorted(by_dir.items(), key=lambda x: -x[1]):
-            lines.append(f"  {d:20s} : {count:4d} files")
-
-        lines.append(f"\nUse /scan [directory] to document a module.")
-        return "\n".join(lines)
-
-    # -- /tree ---
-
     def _show_tree(self, max_depth: int = 3) -> str:
         if not self.workspace.exists():
             return f"Workspace not found: {self.workspace}"
@@ -769,42 +301,212 @@ class CodexAgent(BaseAgent):
                 ext = "    " if is_last else "│   "
                 self._tree_recursive(entry, lines, prefix + ext, max_depth, depth + 1)
 
-    # -- post_process ---
+    def _inventory(self) -> str:
+        """Quick inventory of the workspace without LLM calls."""
+        if not self.workspace.exists():
+            return f"Workspace not found: {self.workspace}"
 
-    def post_process(self, response: str) -> str:
-        """Extract doc_md blocks from conversational responses too."""
-        doc_match = re.search(r"```doc_md\s*(.*?)\s*```", response, re.DOTALL)
-        if not doc_match:
-            return response
+        files = self._collect_code_files(self.workspace)
+        if not files:
+            return "No code files found in the workspace."
 
+        by_ext: dict[str, int] = {}
+        by_dir: dict[str, int] = {}
+        total_size = 0
+
+        for f in files:
+            ext = f.suffix.lower()
+            by_ext[ext] = by_ext.get(ext, 0) + 1
+            try:
+                relative = f.relative_to(self.workspace)
+            except ValueError:
+                relative = f
+            top_dir = str(relative.parts[0]) if len(relative.parts) > 1 else "(root)"
+            by_dir[top_dir] = by_dir.get(top_dir, 0) + 1
+            total_size += f.stat().st_size
+
+        lines = [
+            f"Workspace inventory: {self.workspace}",
+            f"   {len(files)} code files, {total_size / 1024:.0f} KB total",
+            "",
+            "By extension:",
+        ]
+        for ext, count in sorted(by_ext.items(), key=lambda x: -x[1]):
+            lines.append(f"  {ext:12s} : {count:4d} files")
+
+        lines.append("\nBy directory (top-level):")
+        for d, count in sorted(by_dir.items(), key=lambda x: -x[1]):
+            lines.append(f"  {d:20s} : {count:4d} files")
+
+        lines.append(f"\nUse /scan [directory] to document a module.")
+        return "\n".join(lines)
+
+    def _save_doc(self, module_name: str, content: str) -> str:
+        """Save generated documentation to context/docs/."""
         try:
-            first_line = doc_match.group(1).strip().split("\n")[0]
-            name = re.sub(r"^#+\s*", "", first_line).strip()
-            name = re.sub(r"^Documentation\s*[-—]\s*", "", name, flags=re.IGNORECASE).strip()
-            filepath = self._save_doc(name or "manual", doc_match.group(1))
-            self.log_action(f"Documentation generated: {name}")
-            self.log_file(filepath)
-            return (
-                f"{response}\n\n"
-                f"Documentation saved: {filepath}\n"
-                f"   Run /reindex for other agents to benefit."
-            )
+            CONTEXT_DOCS_DIR.mkdir(parents=True, exist_ok=True)
+            filepath = self._doc_path_for(module_name)
+            logger.info(f"[Codex] Writing doc to: {filepath.resolve()}")
+            filepath.write_text(content.strip(), encoding="utf-8")
+            logger.info(f"Documentation saved: {filepath}")
+            return str(filepath)
         except Exception as e:
-            logger.error(f"Doc save failed: {e}")
-            return f"{response}\n\nSave error: {e}"
+            logger.error(f"[Codex] _save_doc FAILED for {module_name}: {e}")
+            raise
 
-    def _help_text(self) -> str:
-        return (
-            super()._help_text()
-            + "\nCodex-specific commands:\n"
-            "  /scan [path]    -- Scan and document workspace files/directories\n"
-            "  /inventory      -- Quick overview (files, extensions, sizes)\n"
-            "  /tree           -- Workspace tree\n"
-            "\nExamples:\n"
-            "  /inventory                    -> global stats\n"
-            "  /scan                         -> document entire workspace\n"
-            "  /scan src/main/java           -> document a subdirectory\n"
-            "  /scan src/main/App.java       -> document a specific file\n"
-            "  'How does the auth module work?' -> question via RAG\n"
-            "\nDocs are saved in context/docs/ -> /reindex after.\n"
+    # -- Validation: detect hallucinated names ---
+
+    def _validate_doc(
+        self,
+        doc_text: str,
+        known_ids: set[str],
+        noise: frozenset[str],
+    ) -> list[str]:
+        """Return list of names mentioned in doc_text that are not in known_ids ∪ noise.
+
+        Scans:
+          - backtick-quoted tokens
+          - CamelCase tokens >= 4 chars
+          - snake_case tokens >= 4 chars
+          - dotted paths (e.g. com.example.Foo or my.module.bar)
+
+        Excludes: tokens that match common English words via a small built-in stopword
+        list (don't reinvent NLTK; ~50 words is enough for this scope).
+        """
+        # Built-in stopwords to avoid false positives on common English words
+        STOPWORDS = {
+            "the", "and", "for", "with", "from", "this", "that", "these", "those",
+            "are", "was", "were", "been", "have", "has", "had", "will", "would",
+            "could", "should", "may", "might", "must", "can", "its", "their", "our",
+            "your", "you", "they", "them", "then", "than", "there", "here", "when",
+            "where", "what", "which", "who", "how", "why", "some", "any", "all",
+            "each", "every", "both", "either", "neither", "such", "only", "also",
+            "very", "just", "even", "well", "back", "still", "again", "once", "twice"
+        }
+        
+        # Extract candidate names using multiple patterns
+        candidates = set()
+        
+        # Backtick-quoted identifiers
+        candidates.update(re.findall(r'`([^`\s]+)`', doc_text))
+        
+        # Bolded identifiers (LLM sometimes bolds class names)
+        candidates.update(re.findall(r'\*\*([A-Z][a-zA-Z0-9_]+)\*\*', doc_text))
+        
+        # CamelCase/PascalCase identifiers >= 4 chars
+        candidates.update(m.group(1) for m in re.finditer(r'\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b', doc_text) if len(m.group(1)) >= 4)
+        
+        # snake_case identifiers >= 4 chars
+        candidates.update(m.group(1) for m in re.finditer(r'\b([a-z_][a-z0-9_]{3,})\b', doc_text) if len(m.group(1)) >= 4)
+        
+        # Dotted paths (Java packages, Python modules, etc.)
+        candidates.update(re.findall(r'\b([a-z0-9_]+(?:\.[a-z0-9_]+)+)\b', doc_text))
+        
+        # Clean candidates: remove parentheses, brackets, etc.
+        cleaned = set()
+        for cand in candidates:
+            clean = cand.replace("()", "").replace("[]", "").split(".")[0]
+            if clean and len(clean) >= 2:  # Minimum length after cleaning
+                cleaned.add(clean)
+        
+        # Filter out stopwords and noise
+        filtered = [c for c in cleaned if c.lower() not in STOPWORDS and c not in noise]
+        
+        # Check which filtered names are not in known identifiers
+        unknown = [name for name in filtered if name not in known_ids]
+        
+        return unknown
+
+    def _generate_doc_for_file_strict(
+        self,
+        file_path: str,
+        source_code: str,
+        max_retries: int = 3,
+    ) -> tuple[str, dict]:
+        """Generate a doc with grounding + reject-retry. Returns (doc, quality_meta).
+
+        quality_meta = {
+            "attempts": int,
+            "abstained": bool,
+            "hallucinated_names_last_attempt": list[str],
+            "validation_passed": bool,
+            "g_version": str,
+        }
+        """
+        language = detect_language(file_path)
+        known_ids = extract_identifiers(source_code, language)
+        
+        # Get config from extra_params (standard pattern in BaseAgent)
+        config = self.extra_params.get("config", {})
+        noise = load_noise_filter(config)
+
+        last_doc = ""
+        last_hallucinated: list[str] = []
+        for attempt in range(max_retries):
+            # progressively stricter prompts on retry
+            extra = ""
+            if attempt > 0 and last_hallucinated:
+                extra = (
+                    f"\n\nIMPORTANT: your previous attempt mentioned these names "
+                    f"that do NOT exist in the source: {last_hallucinated}. "
+                    f"Remove them and any sentence that references them. "
+                    f"If you cannot describe the file without using these names, "
+                    f"write {ABSTAIN_TOKEN} and stop."
+                )
+            system = prepend_grounding(self.get_system_prompt() + extra)
+            # temperature pinned low for retries
+            temp = config.get("grounding", {}).get("codex_temperature_first_attempt", 0.1) if attempt == 0 else config.get("grounding", {}).get("codex_temperature_retry", 0.0)
+            # token cap from config
+            max_tokens = config.get("grounding", {}).get("codex_max_tokens", 1500)
+            
+            doc = self.client.chat(
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": source_code},
+                ],
+                model=self.model,
+                temperature=temp,
+                max_tokens=max_tokens,
+                complete=True,
+            )
+            last_doc = doc
+
+            if contains_abstain(doc):
+                quality_meta = {
+                    "attempts": attempt + 1,
+                    "abstained": True,
+                    "hallucinated_names_last_attempt": [],
+                    "validation_passed": True,
+                    "g_version": GROUNDING_VERSION,
+                }
+                return doc, quality_meta
+
+            hallucinated = self._validate_doc(doc, known_ids, noise)
+            if not hallucinated:
+                quality_meta = {
+                    "attempts": attempt + 1,
+                    "abstained": False,
+                    "hallucinated_names_last_attempt": [],
+                    "validation_passed": True,
+                    "g_version": GROUNDING_VERSION,
+                }
+                return doc, quality_meta
+            last_hallucinated = hallucinated
+
+        # all retries exhausted: emit abstain doc
+        abstain_doc = (
+            f"# {Path(file_path).name}\n\n"
+            f"{ABSTAIN_TOKEN}\n\n"
+            f"Codex could not produce a grounded description for this file after "
+            f"{max_retries} attempts. Hallucinated names in last attempt: "
+            f"{last_hallucinated[:10]}. The file is excluded from the synthesis pyramid "
+            f"and tagged in quality_report.json."
         )
+        quality_meta = {
+            "attempts": max_retries,
+            "abstained": True,
+            "hallucinated_names_last_attempt": last_hallucinated,
+            "validation_passed": False,
+            "g_version": GROUNDING_VERSION,
+        }
+        return abstain_doc, quality_meta

@@ -266,6 +266,59 @@ scm:
   unlock_cmd: ""                       # e.g. "p4 edit {filepath}" for Perforce
   lock_cmd: ""                         # e.g. "p4 revert -a {filepath}"
 
+# ── Grounding Configuration ────────────────────────────────
+# Anti-hallucination settings for codex and synthesis agents.
+# Controls reject-retry-abstain behavior, token limits, and temperature.
+
+noise_filter:
+  language_presets:
+    - java-spring
+    - python-stdlib
+  terms:
+    # user-extensible generic terms that should not trigger validation failures
+    - "Spring"
+    - "JPA"
+    - "Hibernate"
+    - "Repository"
+    - "Controller"
+    - "Service"
+    - "Entity"
+    - "Component"
+    - "Autowired"
+    - "Bean"
+    - "REST"
+    - "HTTP"
+    - "JSON"
+    - "XML"
+    - "SQL"
+    - "CRUD"
+    - "API"
+    - "DTO"
+    - "DAO"
+    - "POJO"
+    - "ORM"
+    - "MVC"
+    - "CLI"
+    - "SDK"
+    - "JVM"
+    - "MyDomainTerm"  # example user-defined term
+
+# Grounding settings for codex (per-file documentation generation)
+grounding:
+  codex_max_tokens: 1500
+  codex_max_retries: 3
+  codex_temperature_first_attempt: 0.1
+  codex_temperature_retry: 0.0
+  
+  # Synthesis token limits (per level)
+  synthesis_L3_aggregate_max_tokens: 800
+  synthesis_L2_max_tokens: 800
+  synthesis_L1_max_tokens: 600
+  synthesis_L0_max_tokens: 400
+  synthesis_temperature: 0.1
+  synthesis_retry_temperature: 0.0
+  synthesis_abstain_threshold: 5  # if >N hallucinated names, abstain
+
 # ── Synthesis blocks (optional) ────────────────────────────
 # Customize how synthesize.py classifies codex docs into architectural blocks.
 # Default blocks: backend, frontend, database, tests, other.
