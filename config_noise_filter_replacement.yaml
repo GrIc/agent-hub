@@ -1,0 +1,149 @@
+# ============================================================
+# REPLACEMENT for the `noise_filter:` block in config.yaml
+# ============================================================
+# Drop-in replacement for the existing noise_filter section.
+# Adds ~80 standard Jakarta-EE / Java / Python / web terms that were missing.
+# Comparison is case-insensitive in the validator, so casing here is informational.
+
+noise_filter:
+  language_presets:
+    - java-spring
+    - java-jakarta
+    - python-stdlib
+
+  terms:
+    # ---- Java + Spring (existing) ----
+    - "Spring"
+    - "JPA"
+    - "Hibernate"
+    - "Repository"
+    - "Controller"
+    - "Service"
+    - "Entity"
+    - "Component"
+    - "Autowired"
+    - "Bean"
+    - "REST"
+    - "HTTP"
+    - "JSON"
+    - "XML"
+    - "SQL"
+    - "CRUD"
+    - "API"
+    - "DTO"
+    - "DAO"
+    - "POJO"
+    - "ORM"
+    - "MVC"
+    - "CLI"
+    - "SDK"
+    - "JVM"
+
+    # ---- Jakarta EE / JAX-RS (NEW — fixes web service file abstains) ----
+    - "Application"
+    - "ApplicationPath"
+    - "Path"
+    - "PathParam"
+    - "QueryParam"
+    - "FormParam"
+    - "HeaderParam"
+    - "GET"
+    - "POST"
+    - "PUT"
+    - "DELETE"
+    - "PATCH"
+    - "Produces"
+    - "Consumes"
+    - "Provider"
+    - "Inject"
+    - "Context"
+    - "MediaType"
+    - "Response"
+    - "Request"
+    - "Servlet"
+    - "Filter"
+    - "Listener"
+    - "JAXB"
+    - "JAXRS"
+    - "EJB"
+    - "JNDI"
+    - "JMS"
+    - "JTA"
+    - "JCache"
+    - "JSR"
+
+    # ---- Java stdlib types commonly mentioned (NEW) ----
+    - "String"
+    - "Integer"
+    - "Long"
+    - "Boolean"
+    - "Double"
+    - "Float"
+    - "Object"
+    - "Class"
+    - "Map"
+    - "List"
+    - "Set"
+    - "Collection"
+    - "Iterator"
+    - "Optional"
+    - "Stream"
+    - "Future"
+    - "CompletableFuture"
+    - "JSONObject"
+    - "JSONArray"
+
+    # ---- Python stdlib (NEW) ----
+    - "None"
+    - "True"
+    - "False"
+    - "Any"
+    - "Optional"
+    - "Dict"
+    - "List"
+    - "Tuple"
+    - "Set"
+    - "Callable"
+
+    # ---- Common path / package roots (NEW — fixes "org", "com", "web" abstains) ----
+    - "org"
+    - "com"
+    - "net"
+    - "io"
+    - "java"
+    - "javax"
+    - "jakarta"
+    - "web"
+    - "src"
+    - "main"
+    - "test"
+    - "lib"
+    - "META-INF"
+    - "WEB-INF"
+
+    # ---- Common framework / lib names (NEW) ----
+    - "Tomcat"
+    - "Jetty"
+    - "Maven"
+    - "Gradle"
+    - "Log4j"
+    - "Slf4j"
+    - "Junit"
+    - "Mockito"
+    - "Lombok"
+    - "Jackson"
+    - "Gson"
+    - "OkHttp"
+    - "Retrofit"
+    - "Netty"
+
+    # ---- File / format names (NEW) ----
+    - "pom"
+    - "build"
+    - "Dockerfile"
+    - "README"
+
+    # ---- Prompt-template artifacts (CRITICAL — fixes the "doc_md" / "line" abstains) ----
+    - "doc_md"
+    - "line"
+    - "lines"

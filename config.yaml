@@ -271,9 +271,11 @@ scm:
 noise_filter:
   language_presets:
     - java-spring
+    - java-jakarta
     - python-stdlib
+
   terms:
-    # user-extensible generic terms that should not trigger validation failures
+    # ---- Java + Spring (existing) ----
     - "Spring"
     - "JPA"
     - "Hibernate"
@@ -299,7 +301,116 @@ noise_filter:
     - "CLI"
     - "SDK"
     - "JVM"
-    - "MyDomainTerm"  # example user-defined term
+
+    # ---- Jakarta EE / JAX-RS (NEW — fixes web service file abstains) ----
+    - "Application"
+    - "ApplicationPath"
+    - "Path"
+    - "PathParam"
+    - "QueryParam"
+    - "FormParam"
+    - "HeaderParam"
+    - "GET"
+    - "POST"
+    - "PUT"
+    - "DELETE"
+    - "PATCH"
+    - "Produces"
+    - "Consumes"
+    - "Provider"
+    - "Inject"
+    - "Context"
+    - "MediaType"
+    - "Response"
+    - "Request"
+    - "Servlet"
+    - "Filter"
+    - "Listener"
+    - "JAXB"
+    - "JAXRS"
+    - "EJB"
+    - "JNDI"
+    - "JMS"
+    - "JTA"
+    - "JCache"
+    - "JSR"
+
+    # ---- Java stdlib types commonly mentioned (NEW) ----
+    - "String"
+    - "Integer"
+    - "Long"
+    - "Boolean"
+    - "Double"
+    - "Float"
+    - "Object"
+    - "Class"
+    - "Map"
+    - "List"
+    - "Set"
+    - "Collection"
+    - "Iterator"
+    - "Optional"
+    - "Stream"
+    - "Future"
+    - "CompletableFuture"
+    - "JSONObject"
+    - "JSONArray"
+
+    # ---- Python stdlib (NEW) ----
+    - "None"
+    - "True"
+    - "False"
+    - "Any"
+    - "Optional"
+    - "Dict"
+    - "List"
+    - "Tuple"
+    - "Set"
+    - "Callable"
+
+    # ---- Common path / package roots (NEW — fixes "org", "com", "web" abstains) ----
+    - "org"
+    - "com"
+    - "net"
+    - "io"
+    - "java"
+    - "javax"
+    - "jakarta"
+    - "web"
+    - "src"
+    - "main"
+    - "test"
+    - "lib"
+    - "META-INF"
+    - "WEB-INF"
+
+    # ---- Common framework / lib names (NEW) ----
+    - "Tomcat"
+    - "Jetty"
+    - "Maven"
+    - "Gradle"
+    - "Log4j"
+    - "Slf4j"
+    - "Junit"
+    - "Mockito"
+    - "Lombok"
+    - "Jackson"
+    - "Gson"
+    - "OkHttp"
+    - "Retrofit"
+    - "Netty"
+
+    # ---- File / format names (NEW) ----
+    - "pom"
+    - "build"
+    - "Dockerfile"
+    - "README"
+
+    # ---- Prompt-template artifacts (CRITICAL — fixes the "doc_md" / "line" abstains) ----
+    - "doc_md"
+    - "line"
+    - "lines"
+
 
 # Grounding settings for codex (per-file documentation generation)
 grounding:

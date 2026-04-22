@@ -26,6 +26,11 @@ from src.rag.grounding import (
     load_noise_filter,
 )
 from src.rag.identifiers import extract_identifiers, detect_language
+from src.rag.validator import validate_doc
+from src.rag.identifiers_extra import (
+    extract_java_annotations,
+    should_validate_file,
+)
 from src.rag.quality_report import record_file_quality
 
 logger = logging.getLogger(__name__)
@@ -356,66 +361,6 @@ class CodexAgent(BaseAgent):
 
     # -- Validation: detect hallucinated names ---
 
-    def _validate_doc(
-        self,
-        doc_text: str,
-        known_ids: set[str],
-        noise: frozenset[str],
-    ) -> list[str]:
-        """Return list of names mentioned in doc_text that are not in known_ids ∪ noise.
-
-        Scans:
-          - backtick-quoted tokens
-          - CamelCase tokens >= 4 chars
-          - snake_case tokens >= 4 chars
-          - dotted paths (e.g. com.example.Foo or my.module.bar)
-
-        Excludes: tokens that match common English words via a small built-in stopword
-        list (don't reinvent NLTK; ~50 words is enough for this scope).
-        """
-        # Built-in stopwords to avoid false positives on common English words
-        STOPWORDS = {
-            "the", "and", "for", "with", "from", "this", "that", "these", "those",
-            "are", "was", "were", "been", "have", "has", "had", "will", "would",
-            "could", "should", "may", "might", "must", "can", "its", "their", "our",
-            "your", "you", "they", "them", "then", "than", "there", "here", "when",
-            "where", "what", "which", "who", "how", "why", "some", "any", "all",
-            "each", "every", "both", "either", "neither", "such", "only", "also",
-            "very", "just", "even", "well", "back", "still", "again", "once", "twice"
-        }
-        
-        # Extract candidate names using multiple patterns
-        candidates = set()
-        
-        # Backtick-quoted identifiers
-        candidates.update(re.findall(r'`([^`\s]+)`', doc_text))
-        
-        # Bolded identifiers (LLM sometimes bolds class names)
-        candidates.update(re.findall(r'\*\*([A-Z][a-zA-Z0-9_]+)\*\*', doc_text))
-        
-        # CamelCase/PascalCase identifiers >= 4 chars
-        candidates.update(m.group(1) for m in re.finditer(r'\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b', doc_text) if len(m.group(1)) >= 4)
-        
-        # snake_case identifiers >= 4 chars
-        candidates.update(m.group(1) for m in re.finditer(r'\b([a-z_][a-z0-9_]{3,})\b', doc_text) if len(m.group(1)) >= 4)
-        
-        # Dotted paths (Java packages, Python modules, etc.)
-        candidates.update(re.findall(r'\b([a-z0-9_]+(?:\.[a-z0-9_]+)+)\b', doc_text))
-        
-        # Clean candidates: remove parentheses, brackets, etc.
-        cleaned = set()
-        for cand in candidates:
-            clean = cand.replace("()", "").replace("[]", "").split(".")[0]
-            if clean and len(clean) >= 2:  # Minimum length after cleaning
-                cleaned.add(clean)
-        
-        # Filter out stopwords and noise
-        filtered = [c for c in cleaned if c.lower() not in STOPWORDS and c not in noise]
-        
-        # Check which filtered names are not in known identifiers
-        unknown = [name for name in filtered if name not in known_ids]
-        
-        return unknown
 
     def _generate_doc_for_file_strict(
         self,
@@ -431,14 +376,41 @@ class CodexAgent(BaseAgent):
             "hallucinated_names_last_attempt": list[str],
             "validation_passed": bool,
             "g_version": str,
+            "skipped_validation": bool,
         }
         """
         language = detect_language(file_path)
         known_ids = extract_identifiers(source_code, language)
         
+        # Augment known identifiers with Java annotations when applicable
+        if language == "java":
+            known_ids = known_ids | extract_java_annotations(source_code)
+        
         # Get config from extra_params (standard pattern in BaseAgent)
         config = self.extra_params.get("config", {})
         noise = load_noise_filter(config)
+
+        # Bypass validation for non-source files (Bug #6 quick fix)
+        if not should_validate_file(file_path):
+            doc = self.client.chat(
+                messages=[
+                    {"role": "system", "content": prepend_grounding(self.get_system_prompt())},
+                    {"role": "user", "content": source_code},
+                ],
+                model=self.model,
+                temperature=config.get("grounding", {}).get("codex_temperature_first_attempt", 0.1),
+                max_tokens=config.get("grounding", {}).get("codex_max_tokens", 1500),
+                complete=True,
+            )
+            quality_meta = {
+                "attempts": 1,
+                "abstained": contains_abstain(doc),
+                "hallucinated_names_last_attempt": [],
+                "validation_passed": True,
+                "g_version": GROUNDING_VERSION,
+                "skipped_validation": True,
+            }
+            return doc, quality_meta
 
         last_doc = ""
         last_hallucinated: list[str] = []
@@ -481,17 +453,25 @@ class CodexAgent(BaseAgent):
                 }
                 return doc, quality_meta
 
-            hallucinated = self._validate_doc(doc, known_ids, noise)
-            if not hallucinated:
+            issues = validate_doc(
+                doc_text=doc,
+                source_text=source_code,
+                known_identifiers=known_ids,
+                noise_filter=noise,
+                language=language,
+                file_path=file_path,
+            )
+            if not issues:
                 quality_meta = {
                     "attempts": attempt + 1,
                     "abstained": False,
                     "hallucinated_names_last_attempt": [],
                     "validation_passed": True,
                     "g_version": GROUNDING_VERSION,
+                    "skipped_validation": False,
                 }
                 return doc, quality_meta
-            last_hallucinated = hallucinated
+            last_hallucinated = [i["name"] for i in issues]
 
         # all retries exhausted: emit abstain doc
         abstain_doc = (

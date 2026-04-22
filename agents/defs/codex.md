@@ -23,6 +23,8 @@ For every file you document:
    the source verbatim.
 5. Do NOT speculate about behavior not visible in the code.
 6. Cite line numbers when possible: `class X (line 42)`, `method foo (line 117)`.
+7. When citing line numbers, use the form "(line 42)" — the validator strips
+   this pattern and won't treat it as an identifier.
 
 Validation runs after every generation. Producing names that don't exist in the
 source will cause the doc to be rejected and regenerated with stricter constraints.
