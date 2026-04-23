@@ -58,8 +58,13 @@ from src.rag.grounding import (
     ABSTAIN_TOKEN,
     prepend_grounding,
     contains_abstain,
+    load_noise_filter,
+    DEFAULT_NOISE_FILTER,
 )
-from src.rag.identifiers import extract_identifiers
+
+# Import validator for hallucination detection
+from src.rag.validator import validate_doc
+from src.rag.identifiers import extract_identifiers, detect_language
 from src.rag.quality_report import record_synthesis_quality
 
 console = Console()
@@ -518,7 +523,14 @@ class Synthesizer:
             noise = DEFAULT_NOISE_FILTER
 
         # Validate output for hallucinations
-        hallucinations = validate_doc(output, known_ids, noise)
+        language = detect_language(input_text) if input_text else "unknown"
+        hallucinations = validate_doc(
+            doc_text=output,
+            source_text=input_text,
+            known_identifiers=known_ids,
+            noise_filter=noise,
+            language=language,
+        )
         if hallucinations:
             logger.warning(f"Detected {len(hallucinations)} hallucinated terms in output: {hallucinations}")
 
@@ -529,17 +541,19 @@ class Synthesizer:
             for sentence in sentences:
                 has_hallucination = False
                 for hallucination in hallucinations:
-                    if re.search(rf'\b{re.escape(hallucination)}\b', sentence):
+                    if re.search(rf'\b{re.escape(hallucination["name"])}\b', sentence):
                         has_hallucination = True
-                        logger.debug(f"Removing sentence with hallucination '{hallucination}': {sentence[:100]}...")
+                        logger.debug(f"Removing sentence with hallucination '{hallucination['name']}': {sentence[:100]}...")
                         break
 
                 if not has_hallucination:
                     cleaned_sentences.append(sentence)
-
+    
             cleaned_output = ' '.join(cleaned_sentences)
+            # Extract just the names from hallucination dicts for the return value
+            hallucination_names = [h["name"] for h in hallucinations]
             logger.info(f"Cleaned output: removed {len(sentences) - len(cleaned_sentences)} sentences containing hallucinations")
-            return cleaned_output, hallucinations
+            return cleaned_output, hallucination_names
 
         logger.debug("No hallucinations detected in output")
         return output, []
