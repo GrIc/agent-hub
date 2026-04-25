@@ -1,0 +1,5 @@
+provider: openai-compat          # or anthropic, claude-code, …
+model: openai/gpt-oss-120b:free
+base_url: https://openrouter.ai/api/v1
+api_key_env: OPENAI_API_KEY
+timeout: 60
