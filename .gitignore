@@ -32,3 +32,5 @@ projects/*
 context/architecture/*
 context/code-samples/*
 context/docs/*
+.cortex/*
+.claude/*

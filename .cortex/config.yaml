@@ -1,5 +1,18 @@
-provider: openai-compat          # or anthropic, claude-code, …
+# CORTEX config — DO NOT commit (gitignored)
+#
+# Pick ONE provider block below. Set the matching env var before running cortex.
+#
+#provider: gemini
+#model: gemini-3.1-pro-preview
+#api_key_env: GEMINI_API_KEY
+#timeout: 60
+#
+# --- OpenAI ---
+provider: openai-compat
 model: openai/gpt-oss-120b:free
-base_url: https://openrouter.ai/api/v1
+base_url: https://api.openai.com/v1
 api_key_env: OPENAI_API_KEY
-timeout: 60
+#
+# --- Claude Code ---
+# provider: claude-code
+# model: claude-sonnet-4-6
