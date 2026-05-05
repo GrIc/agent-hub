@@ -9,12 +9,14 @@ venv/
 
 # Vector DB
 .vectordb/
+.graphdb/
 
 # Watch state
 output/.scan_state.json
 
 # Outputs
 output/
+plans/
 
 # IDE
 .vscode/
@@ -32,3 +34,5 @@ projects/*
 context/architecture/*
 context/code-samples/*
 context/docs/*
+reports/*
+context/changelog/*
