@@ -127,19 +127,43 @@ scanning:
     # - .hql
     # - .rql
 
-# ── Knowledge Graph (GraphRAG) ─────────────────────────────
-# Structural layer complementing the vector store.
-# Extracts {entity, relation, entity} triplets from documentation and
-# stores them in a NetworkX graph (.graphdb/) for dependency / impact queries.
-# If enabled, hybrid search boosts vector results that match graph neighbors.
+# ── GraphRAG (Phase 2 — World Model) ───────────────────────
+# Language-agnostic structural extraction via tree-sitter + AST queries.
+# See docs/roadmap/02_PHASE_GRAPHRAG_v2.md for the full architecture.
 
 graph:
   enabled: true                        # Opt-in. Set true to activate GraphRAG.
-  persist_dir: ".graphdb"              # Directory for graph JSON files
-  max_hops: 2                          # BFS depth for graph traversal
-  graph_boost: 0.3                     # Score multiplier for graph-matched results
-  extraction_model: heavy              # Model alias for triplet extraction
-  extraction_temperature: 0.1          # Low temperature for factual extraction
+  store: sqlite                        # Graph store backend (sqlite only for v2).
+  db_path: .graphdb/graph.sqlite       # SQLite database path (relative to project root).
+  queries_dir: queries                 # Directory containing .scm tree-sitter query files.
+  supported_languages:                 # Keys must match filenames in queries_dir (e.g. queries/java.scm).
+    - java
+    - python
+    - javascript
+    - typescript
+    - go
+  # Extension → language mapping. Keep config-driven so new languages require
+  # zero code changes — just add a .scm file and one dict entry here.
+  extensions:
+    .java: java
+    .py: python
+    .js: javascript
+    .jsx: javascript
+    .ts: typescript
+    .tsx: typescript
+    .go: go
+  # Unknown extensions fall through to topology layer only.
+  unknown_language_policy: topology_only   # or: "skip" to ignore entirely
+  hub_dampening:
+    enabled: true
+    threshold: 0.20                    # Degree percentile above which a node is a "hub"
+    factor: 0.30                       # Score multiplier applied to hub-connected edges
+  # Legacy settings (kept for backward compat with Phase 1 tooling).
+  persist_dir: ".graphdb"
+  max_hops: 2
+  graph_boost: 0.3
+  extraction_model: heavy
+  extraction_temperature: 0.1
 
 # ── Knowledge Graph Schema ──────────────────────────────────────
 # Defines allowed node types, relation types, and allowed relations
