@@ -42,6 +42,7 @@ from src.graph.store import GraphStore
 from src.graph.topology import (
     emit_directory_tree,
     emit_file_nodes,
+    emit_file_contains_edges,
     emit_co_change_edges,
 )
 
@@ -118,8 +119,8 @@ def _emit_topology_layers(store: GraphStore, workspace: Path, config: dict) -> N
     graph_cfg = config.get("graph", {})
     
     # Emit directory tree (Module nodes and contains edges)
-    modules = emit_directory_tree(str(workspace))
-    for node in modules:
+    dir_nodes, dir_edges = emit_directory_tree(str(workspace))
+    for node in dir_nodes:
         store.upsert_node(
             id=node.id,
             type=node.type,
@@ -128,6 +129,15 @@ def _emit_topology_layers(store: GraphStore, workspace: Path, config: dict) -> N
             line_start=node.line_start,
             line_end=node.line_end,
             metadata=node.metadata,
+        )
+    for edge in dir_edges:
+        store.upsert_edge(
+            source_id=edge.source_id,
+            target_id=edge.target_id,
+            relation=edge.relation,
+            evidence_path=edge.evidence_path,
+            evidence_line=edge.evidence_line,
+            metadata=edge.metadata,
         )
     
     # Emit file nodes
@@ -146,6 +156,18 @@ def _emit_topology_layers(store: GraphStore, workspace: Path, config: dict) -> N
             line_start=node.line_start,
             line_end=node.line_end,
             metadata=node.metadata,
+        )
+    
+    # Emit File → Module contains edges
+    file_contains_edges = emit_file_contains_edges(str(workspace), file_nodes)
+    for edge in file_contains_edges:
+        store.upsert_edge(
+            source_id=edge.source_id,
+            target_id=edge.target_id,
+            relation=edge.relation,
+            evidence_path=edge.evidence_path,
+            evidence_line=edge.evidence_line,
+            metadata=edge.metadata,
         )
     
     # Emit co-change edges (requires git)
