@@ -13,60 +13,79 @@ No other file in src/graph/ changes.
 """
 
 from functools import lru_cache
-from typing import Callable, Optional, Tuple
+from typing import TYPE_CHECKING, Callable, Optional, Tuple
 
-from tree_sitter import Language, Parser
+if TYPE_CHECKING:
+    from tree_sitter import Language, Parser
 
+# Forward declarations for lazy import.
+# The actual tree_sitter import happens inside get_parser() to enable
+# graceful degradation: topology-only operations work even when
+# tree-sitter is not installed.
 
-def _load_java() -> Language:
-    import tree_sitter_java
-
-    return Language(tree_sitter_java.language())
-
-
-def _load_python() -> Language:
-    import tree_sitter_python
-
-    return Language(tree_sitter_python.language())
-
-
-def _load_javascript() -> Language:
-    import tree_sitter_javascript
-
-    return Language(tree_sitter_javascript.language())
-
-
-def _load_typescript() -> Language:
-    import tree_sitter_typescript
-
-    return Language(tree_sitter_typescript.language_typescript())
-
-
-def _load_go() -> Language:
-    import tree_sitter_go
-
-    return Language(tree_sitter_go.language())
-
-
-_LANG_LOADERS: dict[str, Callable[[], Language]] = {
-    "java": _load_java,
-    "python": _load_python,
-    "javascript": _load_javascript,
-    "typescript": _load_typescript,
-    "go": _load_go,
+_LANG_LOADERS: dict[str, Callable[[], "Language"]] = {
+    "java": lambda: _import_and_load("java"),
+    "python": lambda: _import_and_load("python"),
+    "javascript": lambda: _import_and_load("javascript"),
+    "typescript": lambda: _import_and_load("typescript"),
+    "go": lambda: _import_and_load("go"),
 }
 
 
-@lru_cache(maxsize=None)
-def get_parser(language: str) -> Optional[Tuple[Parser, Language]]:
-    """Return (Parser, Language) or None if unavailable."""
+def _import_and_load(language: str) -> "Language":
+    """Import and return the Language object for the given language.
+    
+    This function is called lazily inside get_parser(), allowing the
+    parsers module to be imported even when tree-sitter is not installed.
+    """
+    from tree_sitter import Language  # type: ignore
+    
+    loaders: dict[str, Callable[[], tuple]] = {
+        "java": lambda: (
+            __import__("tree_sitter_java"),
+            lambda mod: mod.language(),
+        ),
+        "python": lambda: (
+            __import__("tree_sitter_python"),
+            lambda mod: mod.language(),
+        ),
+        "javascript": lambda: (
+            __import__("tree_sitter_javascript"),
+            lambda mod: mod.language(),
+        ),
+        "typescript": lambda: (
+            __import__("tree_sitter_typescript"),
+            lambda mod: mod.language_typescript(),
+        ),
+        "go": lambda: (
+            __import__("tree_sitter_go"),
+            lambda mod: mod.language(),
+        ),
+    }
+    
+    mod_fn = loaders.get(language)
+    if mod_fn is None:
+        raise ValueError(f"Unknown language: {language}")
+    
+    mod, fn = mod_fn()
+    return Language(fn(mod))
+
+
+def get_parser(language: str) -> Optional[Tuple["Parser", "Language"]]:
+    """Return (Parser, Language) or None if unavailable.
+    
+    This function is lazy: it imports tree_sitter only when called.
+    If tree_sitter or the specific language package is not installed,
+    returns None instead of raising an exception.
+    """
     loader = _LANG_LOADERS.get(language)
     if loader is None:
         return None
     try:
         lang = loader()
-    except ImportError:
+    except (ImportError, ModuleNotFoundError, ValueError):
         return None
+    from tree_sitter import Parser  # type: ignore
     parser = Parser(lang)
     return parser, lang
 
