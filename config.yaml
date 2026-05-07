@@ -414,16 +414,19 @@ noise_filter:
 
 # Grounding settings for codex (per-file documentation generation)
 grounding:
-  codex_max_tokens: 1500
+  codex_max_tokens: 16384              # Increased from 1500 to prevent truncation on large files
   codex_max_retries: 3
   codex_temperature_first_attempt: 0.1
   codex_temperature_retry: 0.0
   
   # Synthesis token limits (per level)
-  synthesis_L3_aggregate_max_tokens: 800
-  synthesis_L2_max_tokens: 800
-  synthesis_L1_max_tokens: 600
-  synthesis_L0_max_tokens: 400
+  # Increased to 4096-8192 to prevent response truncation with medium-sized models.
+  # Previous values (800-1500) were too low — model got cut at ~1500 tokens per continuation.
+  # These limits allow complete factual synthesis in a single API call.
+  synthesis_L3_aggregate_max_tokens: 8192
+  synthesis_L2_max_tokens: 6144
+  synthesis_L1_max_tokens: 4096
+  synthesis_L0_max_tokens: 4096
   synthesis_temperature: 0.1
   synthesis_retry_temperature: 0.0
   synthesis_abstain_threshold: 5  # if >N hallucinated names, abstain
@@ -434,8 +437,9 @@ grounding:
 # Add custom blocks or override path_patterns here.
 
 synthesis:
-  condense_threshold: 8000             # chars: above this, condense doc before synthesis
-  condense_target: 6000                # target size after condensation
+  condense_threshold: 15000              # chars: above this, condense doc before synthesis
+  condense_target: 8000                  # target size after condensation
+  condense_max_tokens: 8192              # max output tokens for condensation step
   # Classification blocks: organize docs into architectural layers during synthesis.
   #
   # How it works:

@@ -359,6 +359,12 @@ Produce a CONDENSED VERSION (target: {target_words} words) that preserves:
 Strip: inline code examples, repetitive getters/setters, test scaffolding \
 details, lengthy prose that duplicates what the class names already convey.
 
+CRITICAL OUTPUT RULES:
+- Write in complete sentences. NEVER cut off mid-word or mid-sentence.
+- If you cannot finish within the target word count, prioritize completeness over brevity.
+- Do NOT repeat any information. Each fact, class, or method must appear exactly once.
+- Check your output before finalizing: if any phrase or sentence appears twice, rewrite to eliminate duplication.
+
 Write in English. Be dense and factual -- this feeds an architecture synthesis \
 engine.
 
@@ -470,7 +476,9 @@ class Synthesizer:
 
         grounded_system = prepend_grounding(system)
         if max_tokens is None:
-            max_tokens = self.config["grounding"][f"synthesis_{level}_max_tokens"]
+            config_key = f"synthesis_{level}_max_tokens"
+            max_tokens = self.config["grounding"].get(config_key, 4096)
+            logger.info(f"[Synthesis] Level={level}, section={section_id}, config_key={config_key}, max_tokens={max_tokens}")
 
         out = self._llm_call(grounded_system, content, int(max_tokens) if max_tokens is not None else 4096)
         if contains_abstain(out):
@@ -558,6 +566,40 @@ class Synthesizer:
         logger.debug("No hallucinations detected in output")
         return output, []
 
+    def _deduplicate_text(self, text: str) -> str:
+        """Remove duplicate sentences and repeated phrases from text.
+        
+        Scans for sentences that appear more than once and keeps only the first occurrence.
+        Also removes mid-text repetitions caused by LLM truncation/continuation.
+        """
+        # Split into sentences (simple heuristic)
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        seen = set()
+        unique_sentences = []
+        duplicates_found = 0
+        
+        for sentence in sentences:
+            # Normalize for comparison: lowercase, strip whitespace
+            normalized = sentence.strip().lower()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                unique_sentences.append(sentence)
+            elif normalized:
+                duplicates_found += 1
+        
+        result = ' '.join(unique_sentences)
+        
+        if duplicates_found > 0:
+            logger.info(f"[Dedup] Removed {duplicates_found} duplicate sentences ({len(text)} -> {len(result)} chars)")
+        
+        # Also fix mid-word truncation: if text ends mid-sentence, try to complete it
+        if result and result[-1] not in '.!?':
+            # Text was cut off - add ellipsis to indicate incompleteness
+            result = result.rstrip() + '...'
+            logger.warning("[Dedup] Output was truncated mid-sentence, added ellipsis")
+        
+        return result
+
     def _llm_call(self, system: str, content: str, max_tokens: int = 4096) -> str:
         """
         Call LLM with grounding instruction and temperature 0.1.
@@ -592,6 +634,8 @@ class Synthesizer:
 
     def _condense(self, text: str, source_name: str) -> str:
         target_words = CONDENSE_TARGET // 5
+        # Get configurable max_tokens for condensation from config
+        condense_max_tokens = self.config.get("synthesis", {}).get("condense_max_tokens", 8192)
         console.print(
             f"\n    [dim]Condensing {source_name} "
             f"({len(text) // 1024}KB -> ~{CONDENSE_TARGET // 1024}KB)...[/dim]",
@@ -601,14 +645,17 @@ class Synthesizer:
             raw_output = self._llm_call(
                 system=CONDENSE_PROMPT.format(target_words=target_words),
                 content=text,
-                max_tokens=2048,
+                max_tokens=condense_max_tokens,
             )
+            logger.info(f"[Condense] {source_name}: {len(text)} chars -> using max_tokens={condense_max_tokens}")
             # Validate and clean the output
             cleaned_output, _ = self._validate_synthesis_output(raw_output, text)
+            # Apply deduplication to remove repeated phrases/sentences
+            deduped_output = self._deduplicate_text(cleaned_output)
             console.print("[dim]done[/dim]")
-            logger.info(f"[Condense] {source_name}: {len(text)} -> {len(cleaned_output)} chars")
+            logger.info(f"[Condense] {source_name}: {len(text)} -> {len(cleaned_output)} chars -> {len(deduped_output)} chars (after dedup)")
             self.stats["condensed"] += 1
-            return cleaned_output
+            return deduped_output
         except Exception as e:
             logger.warning(f"[Condense] Failed for {source_name}: {e} -- truncating")
             return text[:CONDENSE_TARGET] + "\n[... truncated]"
@@ -719,9 +766,9 @@ class Synthesizer:
                     prompt,
                     combined,
                     input_text_for_validation=combined,
-                    level="L3-aggregate",
+                    level="L3_aggregate",
                     section_id=segments_to_module_name(segments),
-                    max_tokens=2048,
+                    max_tokens=None,
                     retry=True,
                 )
                 title = f"# {block_label} -- {module_name}\n\n"
@@ -789,7 +836,7 @@ class Synthesizer:
                 input_text_for_validation=combined,
                 level="L2",
                 section_id=module_name,
-                max_tokens=2048,
+                max_tokens=None,
                 retry=True,
             )
             title = f"# {block_label} -- {module_name}\n\n"
@@ -952,7 +999,7 @@ class Synthesizer:
                 input_text_for_validation=combined,
                 level="L0",
                 section_id="ARCHITECTURE_OVERVIEW",
-                max_tokens=4096,
+                max_tokens=None,
                 retry=True,
             )
             self._save(

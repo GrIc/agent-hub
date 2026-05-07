@@ -221,7 +221,7 @@ def create_agent(name: str, cfg: dict, client: ResilientClient, store: VectorSto
         "rag_top_k": cfg.get("rag", {}).get("rerank_top_k", 4),
         "custom_dsl_info": dsl_context,
         "domain_info": domain_context,
-        "extra_params": extra_params,
+        "extra_params": {**extra_params, "config": cfg},
     }
 
     # if name in PROJECT_AGENTS and project:

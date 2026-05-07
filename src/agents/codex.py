@@ -429,7 +429,7 @@ class CodexAgent(BaseAgent):
             # temperature pinned low for retries
             temp = config.get("grounding", {}).get("codex_temperature_first_attempt", 0.1) if attempt == 0 else config.get("grounding", {}).get("codex_temperature_retry", 0.0)
             # token cap from config
-            max_tokens = config.get("grounding", {}).get("codex_max_tokens", 1500)
+            max_tokens = config.get("grounding", {}).get("codex_max_tokens", 16384)
             
             doc = self.client.chat(
                 messages=[
