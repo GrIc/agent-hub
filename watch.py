@@ -26,12 +26,19 @@ from rich.table import Table
 
 console = Console()
 
-# Time-Travel changelog
+# Time-Travel changelog (legacy — deprecated, use src.temporal.run_changelog)
 try:
     from src.changelog import generate_changelog_entry
     HAS_CHANGELOG = True
 except ImportError:
     HAS_CHANGELOG = False
+
+# New git-aware changelog pipeline
+try:
+    from src.temporal.run_changelog import run_changelog_pipeline
+    HAS_TEMPORAL = True
+except ImportError:
+    HAS_TEMPORAL = False
 
 # -- Config ---
 
@@ -314,8 +321,19 @@ def update_rag_for_files(changed_files: list[str], workspace: Path, cfg: dict):
 
 # -- Main ---
 
-def main():
-    parser = argparse.ArgumentParser(description="Watch -- Incremental change detection and RAG update")
+def _original_main():
+    parser = argparse.ArgumentParser(
+        description="Watch -- Incremental change detection and RAG update",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Modes:
+  python watch.py                      # Full scan + changelog
+  python watch.py --reindex-only       # RAG indexing only
+  python watch.py --changelog-only     # Changelog only (git-aware)
+  python watch.py --bootstrap          # Initialize state without processing
+  python watch.py --status             # Show what would change
+""",
+    )
     parser.add_argument("--dry-run", "-n", action="store_true", help="Show changes without acting")
     parser.add_argument("--reset", action="store_true", help="Delete state and start fresh")
     parser.add_argument("--status", action="store_true", help="Show current state")
@@ -323,9 +341,11 @@ def main():
     parser.add_argument("--config", "-c", default="config.yaml", help="Configuration file")
     parser.add_argument("--no-rag", action="store_true", help="Generate docs but do not update the RAG")
     parser.add_argument("--bootstrap", action="store_true",
-                        help="Snapshot current workspace state without LLM or RAG update. "
-                            "Use after a manual prechauffe (codex + synthesize + ingest) "
-                            "to initialize watch state without re-processing all files.")
+                        help="Snapshot current workspace state without LLM or RAG update.")
+    parser.add_argument("--reindex-only", action="store_true",
+                        help="Only update RAG index, skip changelog")
+    parser.add_argument("--changelog-only", action="store_true",
+                        help="Only run changelog pipeline (git-aware), skip RAG indexing")
     args = parser.parse_args()
 
     level = logging.DEBUG if args.verbose else logging.INFO
@@ -518,7 +538,7 @@ def main():
             console.print(f"[red]Graph update error: {e}[/red]")
             logging.exception("Graph update failed")
 
-    # Generate Time-Travel changelog entry
+    # Generate Time-Travel changelog entry (legacy)
     if HAS_CHANGELOG and not args.dry_run and total_changes > 0:
         try:
             generate_changelog_entry(
@@ -535,5 +555,86 @@ def main():
     console.print(f"\n[green]State saved ({timestamp}). Next scan will only process new changes.[/green]")
 
 
+# ── Changelog-only mode ──────────────────────────────────────────
+
+def run_changelog_mode(cfg: dict, client, model: str) -> None:
+    """Run only the git-aware changelog pipeline."""
+    if not HAS_TEMPORAL:
+        console.print("[red]Temporal module not available. Install dependencies.[/red]")
+        sys.exit(1)
+
+    console.print(f"[bold blue]Running changelog pipeline...[/bold blue]")
+
+    from src.client import ResilientClient
+    from src.temporal.git_client import current_head
+
+    head = current_head()
+    if not head:
+        console.print("[red]Not in a git repository. Changelog requires git.[/red]")
+        sys.exit(1)
+
+    # Build a simple LLM client wrapper for the temporal pipeline
+    class LLMWrapper:
+        def __init__(self, client, model):
+            self._client = client
+            self._model = model
+
+        def chat(self, messages, model=None, temperature=0.1, max_tokens=4096):
+            return self._client.chat(
+                messages=messages,
+                model=model or self._model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+
+    llm_client = LLMWrapper(client, model)
+
+    try:
+        count = run_changelog_pipeline(cfg, llm_client)
+        console.print(f"[green]Changelog pipeline complete. Processed {count} commit(s).[/green]")
+    except Exception as e:
+        console.print(f"[red]Changelog pipeline failed: {e}[/red]")
+        logging.exception("Changelog pipeline failed")
+        sys.exit(1)
+
+
+# ── Main entry point ─────────────────────────────────────────────
+
+def main_full() -> None:
+    """Main entry point for full mode (reindex + changelog)."""
+    # Already handled by the original main() flow above
+    pass
+
+
 if __name__ == "__main__":
-    main()
+    # Re-parse args to handle the new mode flags before the original main()
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--changelog-only", action="store_true")
+    parser.add_argument("--reindex-only", action="store_true")
+    partial, remaining = parser.parse_known_args()
+
+    if partial.changelog_only:
+        # Run changelog-only mode
+        from src.config import load_config
+        from src.client import ResilientClient
+        from src.config import get_model_for_agent
+
+        cfg = load_config("config.yaml")
+        defaults = cfg.get("_defaults", {})
+        client = ResilientClient(
+            api_key=defaults["api_key"],
+            base_url=defaults["api_base_url"],
+            max_retries=defaults.get("retry_max_attempts", 8),
+            base_delay=defaults.get("retry_base_delay", 2.0),
+            max_delay=defaults.get("retry_max_delay", 120.0),
+        )
+        model = get_model_for_agent(cfg, "codex")
+        run_changelog_mode(cfg, client, model)
+    else:
+        # Run original main() with remaining args
+        # Reset sys.argv to exclude our custom flags
+        sys.argv = [sys.argv[0]] + remaining
+        # Find and call the original main logic
+        _original_main()
+
+
