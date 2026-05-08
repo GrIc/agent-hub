@@ -14,6 +14,10 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
+# Changelog entries cache (populated on first request)
+_changelog_cache: list[dict] | None = None
+_changelog_cache_date: str = ""
+
 
 @router.get("/quality", summary="Get quality report JSON")
 def get_quality_report():
@@ -222,4 +226,96 @@ def _render_quality_html(report: dict) -> str:
         html_parts.append("</tbody></table>")
     
     html_parts.append("</body></html>")
+    return "\n".join(html_parts)
+
+
+# ── Changelog endpoints ───────────────────────────────────────────
+
+@router.get("/changelog", summary="Browse changelog HTML", response_class=HTMLResponse)
+def get_changelog_html(days: int = 14):
+    """Return rendered HTML changelog timeline."""
+    from src.temporal.store import TemporalStore
+    from src.temporal.digest import render_daily
+    from datetime import date, timedelta
+
+    try:
+        store = TemporalStore()
+        today = date.today()
+        start = today - timedelta(days=days)
+        
+        # Build timeline
+        timeline = []
+        current = start
+        while current <= today:
+            digest = render_daily(store, current, fmt="markdown")
+            enriched = [c for c in store.enriched_commits(limit=1000)
+                       if c.get("date", "")[:10] == current.isoformat()]
+            if enriched or "No commits" not in digest:
+                timeline.append({
+                    "date": current.isoformat(),
+                    "count": len(enriched),
+                    "digest": digest,
+                })
+            current += timedelta(days=1)
+        
+        html = _render_changelog_html(timeline, days)
+        return HTMLResponse(content=html)
+    except Exception as e:
+        html = f"""
+        <!DOCTYPE html>
+        <html><head><title>Changelog</title><meta charset="utf-8"></head>
+        <body><h1>Changelog</h1><p class="error">Error: {e}</p></body></html>
+        """
+        return HTMLResponse(content=html, status_code=500)
+
+
+def _render_changelog_html(timeline: list[dict], days: int) -> str:
+    """Render changelog timeline as HTML."""
+    html_parts = ["""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Changelog - Agent Hub</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 2em; background: #f8f9fa; }
+.container { max-width: 900px; margin: 0 auto; }
+h1 { color: #333; border-bottom: 2px solid #007bff; padding-bottom: 0.5em; }
+h2 { color: #444; margin-top: 2em; }
+.nav { margin-bottom: 2em; padding: 1em; background: white; border-radius: 4px; }
+.nav a { margin-right: 1em; }
+.day-card { background: white; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 1em; padding: 1em; }
+.day-card .date { font-weight: bold; color: #007bff; }
+.day-card .count { color: #666; font-size: 0.9em; }
+.commit-entry { padding: 0.5em; margin: 0.25em 0; background: #f8f9fa; border-left: 3px solid #007bff; }
+.commit-entry.high-risk { border-left-color: #dc3545; background: #fff5f5; }
+.commit-entry .intent { font-weight: bold; text-transform: capitalize; }
+.commit-entry .sha { color: #888; font-size: 0.85em; }
+pre { white-space: pre-wrap; font-family: monospace; background: #f8f9fa; padding: 1em; border-radius: 4px; }
+.empty { color: #888; font-style: italic; padding: 2em; text-align: center; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>📋 Changelog - Agent Hub</h1>
+<div class="nav">
+<a href="/admin">← Back to Admin</a> |
+<a href="/admin/quality">Quality Dashboard</a>
+</div>
+"""]
+    
+    if not timeline:
+        html_parts.append('<div class="empty">No changelog entries found for the last {} days.</div>'.format(days))
+    else:
+        html_parts.append('<h2>Last {} days</h2>'.format(days))
+        for entry in timeline:
+            html_parts.append('<div class="day-card">')
+            html_parts.append('<span class="date">{}</span> '.format(entry["date"]))
+            html_parts.append('<span class="count">{} commit(s)</span>'.format(entry["count"]))
+            html_parts.append('</div>')
+            html_parts.append('<pre>{}</pre>'.format(entry["digest"]))
+    
+    html_parts.append("""
+</div>
+</body>
+</html>""")
     return "\n".join(html_parts)
