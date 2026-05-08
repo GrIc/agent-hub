@@ -186,6 +186,24 @@ def _emit_topology_layers(store: GraphStore, workspace: Path, config: dict) -> N
         logger.warning("Could not compute co-change edges: %s", e)
 
 
+def _ensure_node_exists(store: GraphStore, node_id: str, node_type: str,
+                        file_path: str, name: str = "") -> None:
+    """Ensure a node exists in the graph, creating a placeholder if needed.
+    
+    This prevents FOREIGN KEY constraint errors when edges reference
+    placeholder target IDs that don't yet exist as nodes.
+    """
+    existing = store.get_node(node_id)
+    if existing is None:
+        store.upsert_node(
+            id=node_id,
+            type=node_type,
+            name=name,
+            file_path=file_path,
+            metadata={"_placeholder": True},
+        )
+
+
 def _process_file_with_structural_extraction(
     store: GraphStore,
     file_path: Path,
@@ -203,18 +221,49 @@ def _process_file_with_structural_extraction(
         logger.warning("Cannot read %s: %s", file_path, e)
         return 0, 0
     
+    fp = str(file_path)
+    
     # Clean up old data for this file
-    removed = store.delete_for_file(str(file_path))
-    logger.debug("Removed %d nodes and %d edges for %s", 
+    removed = store.delete_for_file(fp)
+    logger.debug("Removed %d nodes and %d edges for %s",
                  removed["nodes"], removed["edges"], file_path)
     
     # Extract structural nodes/edges via tree-sitter queries
     nodes, edges = extract_from_file(
-        file_path=str(file_path),
+        file_path=fp,
         source_bytes=source_bytes,
         language=language,
         queries_dir=queries_dir,
     )
+    
+    # Collect all target IDs from edges to ensure they exist as nodes
+    # This prevents FOREIGN KEY constraint errors with SQLite
+    edge_target_types: dict[str, str] = {}
+    for edge in edges:
+        target_id = edge.target_id
+        if target_id not in edge_target_types:
+            # Infer node type from target ID prefix
+            if target_id.startswith("UnresolvedCall:"):
+                edge_target_types[target_id] = "UnresolvedCall"
+            elif target_id.startswith("Import:"):
+                edge_target_types[target_id] = "Import"
+            elif target_id.startswith("Extends:"):
+                edge_target_types[target_id] = "Extends"
+            elif target_id.startswith("Implements:"):
+                edge_target_types[target_id] = "Implements"
+            else:
+                edge_target_types[target_id] = "Placeholder"
+    
+    # Create placeholder nodes for edge targets that don't exist
+    for target_id, node_type in edge_target_types.items():
+        _ensure_node_exists(store, target_id, node_type, fp, name=target_id.split(":", 1)[-1])
+    
+    # Also ensure source nodes exist (e.g., Module:file_path for import edges)
+    source_ids_needed: set[str] = set()
+    for edge in edges:
+        source_ids_needed.add(edge.source_id)
+    for source_id in source_ids_needed:
+        _ensure_node_exists(store, source_id, "Module", fp, name=source_id.split(":", 1)[-1])
     
     # Upsert nodes and edges
     for node in nodes:
