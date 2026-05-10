@@ -10,7 +10,7 @@
 
 ## 0. The cardinal rule (READ FIRST)
 
-Phase 1's validator fix taught us a painful lesson: hard-coding Java/Python heuristics works for CATIA but destroys the product's generic positioning. **Phase 2 must not repeat that mistake.**
+Phase 1's validator fix taught us a painful lesson: hard-coding Java/Python heuristics works for user's domain but destroys the product's generic positioning. **Phase 2 must not repeat that mistake.**
 
 **The rule, absolute and non-negotiable:**
 
@@ -473,7 +473,7 @@ This layer works on **every** file regardless of language — even files we can'
 - `emit_file_nodes(workspace) → File nodes (one per indexed file)`
 - `emit_co_change_edges(repo, since_days=180) → weighted File-File edges`
 
-**ACCEPTANCE**: on the user's CATIA workspace, the graph has ≥10k File nodes and ≥20k directory-contains edges even without any language parser firing.
+**ACCEPTANCE**: on the user's workspace, the graph has ≥10k File nodes and ≥20k directory-contains edges even without any language parser firing.
 
 ---
 
@@ -559,7 +559,7 @@ Before marking Phase 2 complete:
 - [ ] `queries/*.scm` exists for all 5 supported languages.
 - [ ] `src/graph/` contains zero `if language == ...` branches outside `parsers.py`.
 - [ ] `tests/test_graph_language_parity.py` passes.
-- [ ] On user's CATIA workspace: `build_graph.py` produces a graph with ≥10k nodes, ≥30k edges, ≥70% call resolution rate.
+- [ ] On user's workspace: `build_graph.py` produces a graph with ≥10k nodes, ≥30k edges, ≥70% call resolution rate.
 - [ ] Topology-only nodes exist for non-source files (configs, XML, CSV).
 - [ ] Adding a hypothetical 6th language (e.g. Rust) requires:
   * One new file: `queries/rust.scm` (~40 lines).

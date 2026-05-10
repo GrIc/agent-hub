@@ -330,7 +330,7 @@ tree-sitter-python>=0.23
   - 5 hand-crafted Java files (nested classes, generics, lombok-like annotations).
   - 5 hand-crafted Python files (dataclasses, decorators, async).
   - 1 unsupported language (e.g. Rust) → falls back to regex without crash.
-- On a real Java file from the workspace (pick an existing file if present, e.g. `src/main/java/com/example`), extraction returns ≥95% of class/method names that `javap` or `jdt` would report.
+- On a real Java file from the workspace, extraction returns ≥95% of class/method names that `javap` or `jdt` would report.
 - Extraction of a 1MB Java file completes in <500ms.
 - `tree-sitter` import failure → graceful fallback to regex with a single WARNING log on first call.
 
@@ -709,7 +709,7 @@ For Phase 4 to enforce the citation contract (every MCP tool returns `sources: [
        "source": str(rel_path),           # path relative to workspace
        "doc_level": doc_level,            # L0|L1|L2|L3|code|config|test
        "block": block_name,               # backend|frontend|infra|... (from codex)
-       "module": module_name,
+       "module": module_name,             
        "content_type": content_type,      # code|codex_doc|synthesis|config|test|changelog
        "line_start": chunk["line_start"],
        "line_end": chunk["line_end"],

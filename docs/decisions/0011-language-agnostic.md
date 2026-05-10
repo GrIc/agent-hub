@@ -4,7 +4,7 @@
 
 Phase 1 shipped with a validator and extractor that hard-coded Java and Python heuristics. T-FIX-001 made it worse by adding ~80 Jakarta-EE terms, English stopwords, and Java-specific annotation parsing to the validator.
 
-This works for the pilot CATIA workspace but contradicts the product positioning ("trust substrate for any codebase"). A Rust or Kotlin customer would need equivalent patching. That's unacceptable.
+This works for the pilot workspace but contradicts the product positioning ("trust substrate for any codebase"). A Rust or Kotlin customer would need equivalent patching. That's unacceptable.
 
 The issue is not Phase 1's validator per se — it's a **temporary pragma to keep the indexer running** until Phase 2 ships the real world model. The issue is that Phase 2 v1 (as originally spec'd) would repeat the mistake at larger scale: per-language Python branches in the graph extractor, per-language noise filters, per-language prompt templates.
 
