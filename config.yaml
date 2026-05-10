@@ -656,6 +656,24 @@ synthesis:
   #     label: "Database"
   #     path_patterns: [".sql", "/migrations/", "/ddl/"]
 
+# ── MCP configuration ────────────────────────────────────────
+mcp:
+  auth:
+    enabled: false
+    token_env: MCP_BEARER_TOKEN
+  rate_limit:
+    default_per_minute: 60
+    per_tool: {}
+  sse:
+    host: 127.0.0.1
+    port: 8000
+    endpoint: /messages/
+    path: /mcp/sse
+    cors:
+      enabled: false
+      allow_origins: ["*"]
+  log_level: INFO
+
 # ── Domain context (optional) ──────────────────────────────
 # Business domain knowledge injected into all agent prompts.
 # Helps agents understand your product context without hallucinating.

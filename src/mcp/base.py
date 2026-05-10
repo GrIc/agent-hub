@@ -19,9 +19,9 @@ The framework handles:
   - output validation
   - citation enforcement (if requires_citations)
   - error envelope normalization
-  - rate limiting
   - structured logging
-  - auth check
+
+Authentication and rate-limit enforcement are performed by the transport layer.
 """
 
 from abc import ABC, abstractmethod

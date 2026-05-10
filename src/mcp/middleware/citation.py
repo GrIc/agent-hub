@@ -9,11 +9,17 @@ Rules for any output containing 'sources':
 Additionally, if the output contains an `identifiers_mentioned` list (or identifiers extractable from the prose), each identifier MUST be findable in at least one of the cited source ranges. Otherwise: citation_failure.
 """
 
+import os
 from pathlib import Path
 from src.rag.identifiers import extract_identifiers, detect_language
 
-# Workspace root can be overridden via environment variable if needed; default to "workspace"
-WORKSPACE = Path("workspace")  # configurable
+
+def _workspace_path() -> Path:
+    """Return the workspace root path, configurable via MCP_WORKSPACE_PATH env var.
+
+    Falls back to "workspace" if the environment variable is not set.
+    """
+    return Path(os.getenv("MCP_WORKSPACE_PATH", "workspace"))
 
 
 def enforce_citations(result: dict) -> str | None:
@@ -28,7 +34,7 @@ def enforce_citations(result: dict) -> str | None:
         # Validate required keys
         if not isinstance(src, dict) or "path" not in src or "line_start" not in src or "line_end" not in src:
             return "invalid source entry format"
-        path = WORKSPACE / src["path"]
+        path = _workspace_path() / src["path"]
         if not path.exists():
             return f"cited path does not exist: {src['path']}"
         # Count lines in the file
@@ -59,7 +65,7 @@ def _read_cited_ranges(sources: list[dict]) -> str:
     """
     parts = []
     for src in sources:
-        path = WORKSPACE / src["path"]
+        path = _workspace_path() / src["path"]
         with path.open(encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
         # Convert 1‑based line numbers to list indices
