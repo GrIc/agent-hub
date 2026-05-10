@@ -49,6 +49,35 @@ Agent Hub is an **MCP (Model Context Protocol) server** that transforms your cod
 
 ---
 
+## Strategy
+
+> **Agent Hub makes AI-written code trustworthy enough to ship, at the pace AI writes it.**
+
+Everything follows from that sentence.
+
+### The Four Trust Pillars
+
+| # | Pillar | What it delivers | Phase |
+|---|--------|------------------|-------|
+| 1 | **Grounding** | Every statement anchored in source. No hallucinated class names or invented methods. | 1 |
+| 2 | **Citations** | Every MCP tool response includes verifiable source ranges for external re-checking. | 4 |
+| 3 | **Verification** | Proposed changes checked against formal policies (security, invariants, rules) using an SMT solver. | 6 |
+| 4 | **Simulation** | Proposed changes traced through call graph + production telemetry to predict impact and regression risk. | 6 + 7 |
+
+Pillars 1 and 2 are the entry fee. Pillars 3 and 4 are what make Agent Hub **world-changing** rather than merely useful.
+
+---
+
+## Business Goals
+
+| Horizon | Milestone | Target | Definition of Done |
+|---------|-----------|--------|-------------------|
+| **H1 2026** | v1.0 (Phases 0–5) | 50 self-hosted pilot installations | Hallucination rate < 2% across all MCP tool responses |
+| **H2 2026** | v2.0 (Phase 6) | 5 regulated-industry deployments with formal verification | ≥ 10 project-specific invariants enforced; zero false-positive merges over 30 days |
+| **H1 2027** | v3.0 (Phase 7) | 2 deployments with world-model regression prediction | Regression prediction AUC > 0.8 on historical incident data |
+
+---
+
 ## Quick Start (5 Commands)
 
 1. **Clone** the repository:
@@ -85,9 +114,25 @@ Agent Hub is an **MCP (Model Context Protocol) server** that transforms your cod
 
 ---
 
-## What You Get (Phase 1 - Complete)
+## What You Get
 
 ### 🔧 MCP Tools (29+ tools across 8 categories)
+
+#### Upcoming: Phase 6 — Verifiable Autonomy
+- **`verify_change`** – Formal verification of proposed changes against project invariants (SMT solver)
+- **`simulate_change`** – Simulate behavioral impact via call graph + telemetry tracing
+- **`check_invariants`** – Check a set of project-specific invariants before merge
+
+#### Upcoming: Phase 7 — Adaptive Intelligence
+- **Regression prediction** – World-model-driven risk assessment using production telemetry
+- **Capability registry** – Credit scoring for AI coding agent capabilities
+- **Shadow-mode prompt evolution** – Self-improving prompts tested in shadow mode
+
+> Phase 6 and 7 are gated by Phase 1's grounding quality. See [Strategy](docs/roadmap/STRATEGY.md) for details.
+
+---
+
+### Current Tools (29+ tools across 8 categories)
 
 #### 1. Code Intelligence Tools
 - **`expert_ask`** – RAG-powered code Q&A with full hybrid search (vector + AST + GraphRAG)
@@ -463,6 +508,7 @@ Guide | Description |
 [Decisions (ADRs)](docs/decisions/) | Architectural Decision Records |
 [Vision](docs/vision.md) | Product vision and roadmap |
 [Roadmap](docs/roadmap/00_MASTER_ROADMAP.md) | Complete roadmap and milestones |
+[Strategy](docs/roadmap/STRATEGY.md) | North star strategy, four trust pillars, business goals |
 
 ---
 
@@ -508,78 +554,46 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and contribution gu
 
 ## Roadmap
 
-### Phase 1: Foundation ✅ Complete
-- MCP server with 29+ tools
-- Hybrid search pipeline (vector + AST)
-- Documentation pyramid generation
-- Web UI for debugging and source citation inspection
+```
+Phase 0 — Cleanup                            [week 1]
+Phase 1 — Anti-Hallucination (Grounding)     [weeks 2-4]    [BLOCKING everything]
+Phase 2 — GraphRAG (AST + graph)             [weeks 5-7]    [parallel w/ 3, 4]
+Phase 3 — Changelog Fix                      [weeks 5-6]    [parallel w/ 2, 4]
+Phase 4 — MCP Framework + 23 tools           [weeks 5-11]   [depends on 1]
+Phase 5 — Pipelines + Wiki + Multi-repo      [weeks 12-15]  [depends on 4]
 
-### Phase 2: Graph Intelligence 🚧 In Progress
-- Knowledge graph integration
-- Entity relationship queries
-- Impact analysis tools
-- Pattern discovery algorithms
+v1.0 SHIPS HERE (week 15)
+                        ↓
+Phase 6 — Verifiable Autonomy                [weeks 16-24]  [depends on 2, 4]
+  ├─ neuro-symbolic verification (Z3)
+  ├─ policy DSL + fact extractors
+  ├─ CodeSim (call-graph simulation)
+  ├─ new MCP tools: verify_change, simulate_change, check_invariants
 
-### Phase 3: Change Intelligence 📋 Planned
-- Semantic changelog with entity extraction
-- Architecture evolution tracking
-- Conventional commit analysis
-- Breaking change detection
+v2.0 SHIPS HERE (week 24)
+                        ↓
+Phase 7 — Adaptive Intelligence              [weeks 25-40+] [depends on 6]
+  ├─ telemetry-enriched world model
+  ├─ regression prediction
+  ├─ capability registry + credit scoring (immune system, lite)
+  ├─ shadow-mode prompt self-evolution
 
-### Phase 4: MCP Standardization 📋 Planned
-- Tool schema validation
-- Golden tests for all tools
-- Performance benchmarks
-- Client integration guides
+v3.0 SHIPS HERE (week 40+)
+```
 
-### Phase 5: Advanced Features 📋 Planned
-- Multi-repo support
-- Opt-in telemetry
-- Custom pipeline definitions
-- IDE-specific integrations
+| Phase | Status | Timeline | Key Deliverables |
+|-------|--------|----------|------------------|
+| **0** – Cleanup | ✅ Complete | Week 1 | Repo cleanup, config standardization |
+| **1** – Anti-Hallucination | ✅ Complete | Weeks 2–4 | Source grounding, citation contract, abstain-over-guess |
+| **2** – GraphRAG | 🚧 In Progress | Weeks 5–7 | AST-based knowledge graph, entity relationships |
+| **3** – Changelog Fix | 🚧 In Progress | Weeks 5–6 | Semantic changelog with entity extraction |
+| **4** – MCP Tools | 🚧 In Progress | Weeks 5–11 | Tool schema validation, golden tests, benchmarks |
+| **5** – Advanced Features | 📋 Planned | Weeks 12–15 | Multi-repo support, telemetry, custom pipelines |
+| **6** – Verifiable Autonomy | 📋 Planned | Weeks 16–24 | SMT verification, policy DSL, CodeSim |
+| **7** – Adaptive Intelligence | 📋 Planned | Weeks 25–40+ | World model, regression prediction, prompt evolution |
+
+> Phases 6 and 7 are gated by Phase 1's hallucination rate. If Phase 1 doesn't ship with < 2% hallucinations, everything downstream is built on sand.
 
 ---
 
 **Need help?** Check the [troubleshooting guide](docs/operations/troubleshoot.md) or open an issue.
-
-> The MCP server that gives AI coding agents senior-engineer-level knowledge of your codebase.
-
-Works with **any OpenAI-compatible LLM API** — OpenAI, Mistral, vLLM, Ollama, LiteLLM, Azure OpenAI, or any provider that exposes `/v1/chat/completions`.
-
-
-Uses **ChromaDB** for vector storage with optional cross-encoder reranking.
-
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-
----
-
-## Why
-
-- Large codebases (100k–10M LOC) have knowledge in 5 layers (text, structure, semantics, conventions, history).
-  Coding agents see only layer 1. Agent Hub exposes layers 2–5 as MCP tools.
-
-## Quick start (5 commands)
-
-1. clone
-2. cp .env.example .env  # set API_KEY + API_BASE_URL
-3. ln -s /path/to/your/code workspace
-4. docker compose up -d
-5. point your MCP client at http://localhost:8080/mcp/sse
-
-## What you get
-
-- 29 MCP tools across 8 categories (see [docs/mcp/tools.md](docs/mcp/tools.md), link)
-- Auto-generated wiki at /wiki
-- Daily changelog with semantic summaries
-- Pattern & convention discovery
-- Call graph + impact preview
-- Custom YAML pipelines
-
-## Documentation
-
-- [Architecture](docs/architecture.md)
-- [MCP tools reference](docs/mcp/tools.md)
-- [Client setups](docs/clients/) — Cline, Roo, Claude Code, Cursor, Continue.dev
-- [Operations](docs/operations/) — deploy, scale, troubleshoot
-- [Decisions (ADRs)](docs/decisions/)
-- [Roadmap](docs/roadmap/00_MASTER_ROADMAP.md)
