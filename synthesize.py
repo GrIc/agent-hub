@@ -948,7 +948,7 @@ class Synthesizer:
             try:
                 raw_output = self._llm_call(prompt, combined, max_tokens=3072)
                 # Validate and clean the output to remove hallucinations
-                cleaned_output = self._validate_and_clean(raw_output, combined)
+                cleaned_output, _ = self._validate_synthesis_output(raw_output, combined)
                 title  = f"# {block_label} -- Overview\n\n{block_desc}\n\n"
                 self._save(
                     filepath,
